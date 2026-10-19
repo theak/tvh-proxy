@@ -443,20 +443,17 @@
   let touch = null;
   stage.addEventListener('touchstart', (e) => {
     if (e.target.closest('button, a, input') || e.touches.length !== 1) { touch = null; return; }
-    touch = { y: e.touches[0].clientY, x: e.touches[0].clientX, t: Date.now() };
+    touch = { y: e.touches[0].clientY, x: e.touches[0].clientX };
   }, { passive: true });
+  // Tap toggles the overlay. Channel changes are buttons/keys only (no swipe), so a
+  // stray drag can't retune the tuner.
   stage.addEventListener('touchend', (e) => {
     if (!touch) return;
     const t = e.changedTouches[0];
-    const dy = t.clientY - touch.y;
-    const dx = t.clientX - touch.x;
-    const quick = Date.now() - touch.t < 700;
+    const moved = Math.abs(t.clientY - touch.y) >= 10 || Math.abs(t.clientX - touch.x) >= 10;
     touch = null;
-    if (Math.abs(dy) > 50 && Math.abs(dy) > Math.abs(dx) * 1.3 && quick) {
-      changeChannel(dy < 0 ? 1 : -1);
-    } else if (Math.abs(dy) < 10 && Math.abs(dx) < 10) {
-      if ($('tv').classList.contains('chrome-hidden')) showChrome(); else hideChromeNow();
-    }
+    if (moved) return;
+    if ($('tv').classList.contains('chrome-hidden')) showChrome(); else hideChromeNow();
   });
   function hideChromeNow() { clearTimeout(chromeTimer); hideChrome(); }
   stage.addEventListener('mousemove', () => showChrome());
