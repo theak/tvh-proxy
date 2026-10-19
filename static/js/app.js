@@ -172,13 +172,15 @@
     updateSwitcher();
   }
 
-  // Up/down are disabled at either end of the list, and for a viewer without the remote.
+  // Up/down are hidden at either end of the list, and disabled for a viewer without the remote.
   function updateSwitcher() {
     const locked = !!(S.view && S.view.role === 'follower');
     const idx = S.pendingIdx != null ? S.pendingIdx : S.chIdx.get(S.current);
-    const len = S.channels.length;
-    $('ch-up').disabled = locked || idx == null || L.step(len, idx, 1) < 0;
-    $('ch-down').disabled = locked || idx == null || L.step(len, idx, -1) < 0;
+    for (const [id, dir] of [['ch-up', 1], ['ch-down', -1]]) {
+      const end = idx == null || L.step(S.channels.length, idx, dir) < 0;
+      $(id).disabled = locked;
+      $(id).parentElement.style.visibility = end ? 'hidden' : '';
+    }
   }
 
   // ------------------------------------------------------------ viewer: chrome, loader, toasts
