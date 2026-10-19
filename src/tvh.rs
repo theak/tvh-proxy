@@ -148,6 +148,16 @@ pub fn parse_events(body: &Value) -> Vec<Event> {
 /// The keyword feature: walk keywords in priority order and return the first channel
 /// (in channel-number order) whose *currently airing* show mentions it, matching
 /// case-insensitively across title, episode title, description and category.
+/// Whole-word (or whole-phrase) match: "nfl" finds "NFL Football" and "(NFL)", but
+/// not the "nfl" inside "influential".
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    haystack.match_indices(needle).any(|(i, _)| {
+        let before = haystack[..i].chars().next_back();
+        let after = haystack[i + needle.len()..].chars().next();
+        !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric)
+    })
+}
+
 pub fn keyword_channel(
     keywords: &[String],
     channels: &[Channel],
@@ -170,7 +180,7 @@ pub fn keyword_channel(
                         e.category.unwrap_or(""),
                     ]
                     .iter()
-                    .any(|f| f.to_lowercase().contains(&kw))
+                    .any(|f| contains_word(&f.to_lowercase(), &kw))
             });
             if hit {
                 return Some((ch.uuid.clone(), kw));

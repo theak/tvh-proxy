@@ -121,6 +121,18 @@ fn keyword_picks_first_keyword_then_first_channel_on_air_now() {
         Some(("bb".into(), "olympics".into()))
     );
     assert_eq!(tvh::keyword_channel(&[], &c, &e, 150), None);
+    // Whole words only: "nfl" inside "influential" or "inflation" is not a match.
+    let words = |title: &str| {
+        let e = tvh::parse_events(
+            &json!({ "entries": [{ "channelUuid": "aa", "start": 0, "stop": 1000, "title": title }] }),
+        );
+        tvh::keyword_channel(&kw("nfl"), &c, &e, 150).is_some()
+    };
+    assert!(!words("The influential land baron"));
+    assert!(!words("Inflation report"));
+    assert!(words("NFL Football"));
+    assert!(words("Sunday Night Football (NFL)"));
+    assert!(words("The NFL's best plays"));
 }
 
 #[test]
