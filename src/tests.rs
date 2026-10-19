@@ -192,7 +192,9 @@ fn ffmpeg_args_make_one_second_hls_segments() {
     assert!(args.contains("-hls_time 1"));
     assert!(args.contains("-g 30"));
     assert!(args.contains("-c:a aac -ac 2"));
-    assert!(args.ends_with("/w/1/1/seg%05d.ts /w/1/1/live.m3u8"));
+    assert!(args.contains("-master_pl_name live.m3u8"));
+    assert!(args.contains("-b:v:0 3500k") && args.contains("-b:v:1 800k"));
+    assert!(args.ends_with("/w/1/1/%v%05d.ts /w/1/1/%v.m3u8"));
     let hw = stream::ffmpeg_args(&enc(true), "http://tv/stream", &PathBuf::from("/w")).join(" ");
     assert!(hw.contains("-vaapi_device /dev/dri/renderD128"));
     assert!(hw.contains("h264_vaapi"));
@@ -202,11 +204,15 @@ fn ffmpeg_args_make_one_second_hls_segments() {
 #[test]
 fn only_hls_file_names_are_served() {
     assert!(stream::is_hls_file("live.m3u8"));
-    assert!(stream::is_hls_file("seg00042.ts"));
-    assert!(!stream::is_hls_file("seg.ts"));
+    assert!(stream::is_hls_file("hd.m3u8"));
+    assert!(stream::is_hls_file("sd00042.ts"));
+    assert!(stream::is_hls_file("hd00042.ts"));
+    assert!(!stream::is_hls_file("hd.ts"));
+    assert!(!stream::is_hls_file("seg00042.ts"));
     assert!(!stream::is_hls_file("../config.json"));
-    assert!(!stream::is_hls_file("seg1.ts/../../x"));
-    assert!(!stream::is_hls_file("segab.ts"));
+    assert!(!stream::is_hls_file("hd1.ts/../../x"));
+    assert!(!stream::is_hls_file("sdab.ts"));
+    assert!(!stream::is_hls_file("xx.m3u8"));
 }
 
 // ---------------------------------------------------------------- auth helpers

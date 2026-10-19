@@ -354,9 +354,28 @@ impl EncoderConfig {
     }
 }
 
-/// The ffmpeg command line: broadcast in (MPEG-2/AC-3 or whatever), H.264/AAC HLS out,
-/// with a keyframe every second so every 1 s segment starts cleanly — that's what
-/// keeps iPhone start-up fast.
+/// The two renditions every stream is encoded to, best first. Players pick between
+/// them on their own (adaptive bitrate), so a phone on a weak connection drops to SD
+/// without affecting anyone else watching.
+pub const VARIANTS: [&str; 2] = ["hd", "sd"];
+const SD_HEIGHT: u32 = 360;
+const SD_BITRATE_K: u32 = 800;
+
+/// Ready to play once every rendition has a segment listed.
+pub async fn playlists_ready(dir: &Path) -> bool {
+    for v in VARIANTS {
+        match tokio::fs::read_to_string(dir.join(format!("{v}.m3u8"))).await {
+            Ok(t) if t.contains(".ts") => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// The ffmpeg command line: broadcast in (MPEG-2/AC-3 or whatever), H.264/AAC HLS out
+/// in two renditions (see `VARIANTS`) behind one master playlist, `live.m3u8`. A
+/// keyframe every second makes every 1 s segment start cleanly, which keeps iPhone
+/// start-up fast and lets players switch renditions at any segment.
 pub fn ffmpeg_args(enc: &EncoderConfig, input_url: &str, out_dir: &Path) -> Vec<String> {
     let h = enc.height;
     let br = enc.video_bitrate_k;
@@ -384,13 +403,30 @@ pub fn ffmpeg_args(enc: &EncoderConfig, input_url: &str, out_dir: &Path) -> Vec<
         .map(String::from),
     );
     a.push(input_url.into());
-    a.extend(["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn"].map(String::from));
-    let scale = format!("yadif=deint=interlaced,scale=-2:'min({h},ih)',fps=30");
+    // Deinterlace once, then scale for each rendition.
+    let upload = if enc.hwaccel_vaapi {
+        "format=nv12,hwupload"
+    } else {
+        "format=yuv420p"
+    };
+    a.extend([
+        "-filter_complex".into(),
+        format!(
+            "[0:v:0]yadif=deint=interlaced,fps=30,split=2[a][b];\
+             [a]scale=-2:'min({h},ih)',{upload}[hd];\
+             [b]scale=-2:'min({SD_HEIGHT},ih)',{upload}[sd]"
+        ),
+    ]);
+    // Each rendition carries its own copy of the audio.
+    a.extend(
+        [
+            "-map", "[hd]", "-map", "[sd]", "-map", "0:a:0", "-map", "0:a:0", "-sn", "-dn",
+        ]
+        .map(String::from),
+    );
     if enc.hwaccel_vaapi {
-        a.extend(["-vf".into(), format!("{scale},format=nv12,hwupload")]);
         a.extend(["-c:v", "h264_vaapi", "-profile:v", "main"].map(String::from));
     } else {
-        a.extend(["-vf".into(), format!("{scale},format=yuv420p")]);
         a.extend(
             [
                 "-c:v",
@@ -405,13 +441,17 @@ pub fn ffmpeg_args(enc: &EncoderConfig, input_url: &str, out_dir: &Path) -> Vec<
             .map(String::from),
         );
     }
+    for (i, rate) in [br, SD_BITRATE_K].into_iter().enumerate() {
+        a.extend([
+            format!("-b:v:{i}"),
+            format!("{rate}k"),
+            format!("-maxrate:v:{i}"),
+            format!("{}k", rate + rate / 4),
+            format!("-bufsize:v:{i}"),
+            format!("{}k", rate * 2),
+        ]);
+    }
     a.extend([
-        "-b:v".into(),
-        format!("{br}k"),
-        "-maxrate".into(),
-        format!("{}k", br + br / 4),
-        "-bufsize".into(),
-        format!("{}k", br * 2),
         "-g".into(),
         "30".into(),
         "-keyint_min".into(),
@@ -434,12 +474,16 @@ pub fn ffmpeg_args(enc: &EncoderConfig, input_url: &str, out_dir: &Path) -> Vec<
             "delete_segments+independent_segments+omit_endlist+temp_file",
             "-hls_segment_type",
             "mpegts",
+            "-master_pl_name",
+            "live.m3u8",
+            "-var_stream_map",
+            "v:0,a:0,name:hd v:1,a:1,name:sd",
             "-hls_segment_filename",
         ]
         .map(String::from),
     );
-    a.push(out_dir.join("seg%05d.ts").to_string_lossy().into_owned());
-    a.push(out_dir.join("live.m3u8").to_string_lossy().into_owned());
+    a.push(out_dir.join("%v%05d.ts").to_string_lossy().into_owned());
+    a.push(out_dir.join("%v.m3u8").to_string_lossy().into_owned());
     a
 }
 
@@ -469,10 +513,14 @@ pub fn redact_credentials(line: &str) -> String {
 /// Valid file names under `/hls/{id}/{gen}/` — anything else is rejected (no traversal).
 pub fn is_hls_file(name: &str) -> bool {
     name == "live.m3u8"
-        || (name.starts_with("seg")
-            && name.ends_with(".ts")
-            && name.len() > 6
-            && name[3..name.len() - 3].bytes().all(|b| b.is_ascii_digit()))
+        || VARIANTS.iter().any(|v| {
+            name.strip_prefix(v).is_some_and(|rest| {
+                rest == ".m3u8"
+                    || rest
+                        .strip_suffix(".ts")
+                        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            })
+        })
 }
 
 /// Starts and stops the ffmpeg processes `Hub` asks for.
@@ -590,7 +638,6 @@ impl Runner {
             });
         }
         tokio::spawn(async move {
-            let playlist = dir.join("live.m3u8");
             loop {
                 tokio::time::sleep(Duration::from_millis(250)).await;
                 if !hub.lock().unwrap().is_current(id, generation) {
@@ -623,8 +670,7 @@ impl Runner {
                     hub.lock().unwrap().view_status(id, generation),
                     Some(Status::Starting)
                 );
-                let live = starting
-                    && matches!(tokio::fs::read_to_string(&playlist).await, Ok(t) if t.contains(".ts"));
+                let live = starting && playlists_ready(&dir).await;
                 if live {
                     let mut h = hub.lock().unwrap();
                     if matches!(h.view_status(id, generation), Some(Status::Starting)) {

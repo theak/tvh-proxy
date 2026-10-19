@@ -10,7 +10,7 @@ A sleek, password-protected live TV web frontend for [tvheadend](https://tvheade
 
 - **Full-screen viewer** with now/next info, ↑/↓ buttons or arrow keys to change channel, `G` for the guide, and ✕ (or `S` / `Esc`) to stop and free the tuner.
 - **Guide** built from tvheadend's EPG, with keyboard and touch navigation.
-- **Plays on iPhone.** tvheadend's raw broadcast (MPEG-2 video, AC-3 audio) won't play in Safari, so the proxy re-encodes the channel you pick to H.264/AAC with ffmpeg and serves it as 1-second HLS segments. Typical start-up is ~3 seconds.
+- **Plays on iPhone.** tvheadend's raw broadcast (MPEG-2 video, AC-3 audio) won't play in Safari, so the proxy re-encodes the channel you pick to H.264/AAC with ffmpeg and serves it as 1-second HLS segments, in HD (720p) and SD (360p, ~0.9 Mbps). Each device switches between them on its own as its connection changes, so a phone on weak cellular drops to SD without affecting anyone else. Typical start-up is ~3 seconds.
 - **Jump-to keywords.** e.g. `nfl, olympics`: when you open the app, the first keyword that matches something on air (as a whole word, in its title, episode, description or category) tunes straight to it; otherwise you land in the guide.
 - **One TV, one remote.** Built for a single tuner: everyone signed in watches the same channel. Whoever started watching holds the remote; everyone else watches along with a banner and can't change the channel. When the remote holder leaves or presses ✕, the remote passes on.
 - **Accounts.** The account made during setup is the admin, the only one who sees settings (a full page; opening it stops playback). The admin adds other accounts, resets their passwords, and can mark one account as **priority**: whenever it's watching, it holds the remote (just opening the app takes it, with no retune), and whoever had it keeps watching. Passwords are argon2 hashes; sessions survive restarts; logins are rate-limited.
@@ -62,11 +62,11 @@ On an iPhone, open the site in Safari → Share → **Add to Home Screen** to ge
 | `COOKIE_SECURE` | *(unset)* | `true` to always mark cookies Secure; only if every visit is over HTTPS |
 | `HWACCEL` | *(unset)* | `vaapi` to encode on an Intel iGPU (pass `/dev/dri` into the container) |
 | `VAAPI_DEVICE` | `/dev/dri/renderD128` | |
-| `VIDEO_HEIGHT` | `720` | output height (never upscales) |
-| `VIDEO_BITRATE_KBPS` | `3500` | video bitrate; also roughly the upload each viewer uses |
+| `VIDEO_HEIGHT` | `720` | HD rendition height (never upscales); SD is always 360p |
+| `VIDEO_BITRATE_KBPS` | `3500` | HD video bitrate; also roughly the upload each HD viewer uses (SD is 800) |
 | `FFMPEG_PATH` | `ffmpeg` | |
 
-Software encoding (libx264 `veryfast`, `zerolatency`) of one 720p30 stream needs roughly two modern CPU cores. Channel changes are debounced in the browser (~0.7 s) so flicking through channels doesn't hammer the tuner.
+Software encoding (libx264 `veryfast`, `zerolatency`) of one stream (720p30 plus the 360p copy) needs roughly two to three modern CPU cores. Channel changes are debounced in the browser (~0.7 s) so flicking through channels doesn't hammer the tuner.
 
 ## Develop
 

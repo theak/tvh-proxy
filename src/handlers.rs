@@ -1023,12 +1023,15 @@ pub async fn hls(
     if !stream::is_hls_file(&file) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let path = state.runner.dir(id, generation).join(&file);
-    if file == "live.m3u8" {
+    let dir = state.runner.dir(id, generation);
+    let path = dir.join(&file);
+    if file.ends_with(".m3u8") {
+        // Hold the first request until every rendition has a segment, so players
+        // never see an empty playlist.
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            if let Ok(text) = tokio::fs::read_to_string(&path).await
-                && text.contains(".ts")
+            if stream::playlists_ready(&dir).await
+                && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
                 return (
                     [
