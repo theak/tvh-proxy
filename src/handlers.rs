@@ -315,6 +315,7 @@ pub async fn status(State(state): State<Shared>, headers: HeaderMap) -> Response
             "authed": me.is_some(),
             "username": me.as_ref().map(|a| a.username.clone()),
             "admin": me.as_ref().is_some_and(|a| a.admin),
+            "active_clients": state.hub.lock().unwrap().active_clients(),
         }))
         .into_response(),
     );

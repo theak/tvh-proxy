@@ -47,6 +47,8 @@ Every failed sign-in is written to the container log (`docker logs tvh-proxy | g
 
 `ip` is the connecting address (the tunnel's, behind one); `forwarded_for` is what the proxy reports and can be forged. Passwords are never logged or sent. Use a long random webhook id, since anyone who knows it can trigger the webhook.
 
+`GET /api/status` needs no login and includes `active_clients`, the number of browser tabs watching right now (0 when nothing is playing), handy for a Home Assistant REST sensor. A tab drops out of the count about 15 seconds after it's closed.
+
 Setup is gated by the code from the container log, so a stranger who finds the URL before you finish can't claim it.
 
 On an iPhone, open the site in Safari → Share → **Add to Home Screen** to get a full-screen app.

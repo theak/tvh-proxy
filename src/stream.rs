@@ -144,6 +144,11 @@ impl Hub {
         w.into_iter().map(|(n, _)| n.clone()).collect()
     }
 
+    /// How many tabs are watching the stream right now (0 when nothing is playing).
+    pub fn active_clients(&self) -> usize {
+        self.watchers().len()
+    }
+
     /// Re-decide who holds the remote: a watching priority tab always does;
     /// otherwise the current holder keeps it while watching, else it passes on.
     fn settle_remote(&mut self, now: Instant) {

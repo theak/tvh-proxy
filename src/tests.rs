@@ -1020,9 +1020,19 @@ fn a_parked_tab_does_not_get_pulled_back_into_the_stream() {
 fn silent_tabs_time_out_and_an_unwatched_stream_stops_after_grace() {
     let t0 = Instant::now();
     let mut hub = Hub::new();
+    assert_eq!(hub.active_clients(), 0);
     hub.watch("a", "aa", false, t0).unwrap();
+    hub.heartbeat("b", t0);
+    assert_eq!(hub.active_clients(), 2);
+    hub.stop("b", t0);
+    assert_eq!(
+        hub.active_clients(),
+        1,
+        "a tab that pressed stop isn't watching"
+    );
     let t1 = t0 + CLIENT_TIMEOUT + Duration::from_secs(1);
     assert!(hub.tick(t1).is_empty(), "grace period");
+    assert_eq!(hub.active_clients(), 0, "silent tabs drop out");
     // A reload within the grace period takes over without retuning.
     hub.heartbeat("a2", t1 + Duration::from_secs(5));
     assert_eq!(hub.view("a2").role, Role::Controller);
