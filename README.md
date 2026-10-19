@@ -28,10 +28,9 @@ tvheadend must let this host stream and read the EPG, either anonymously (an acc
 
 ## Exposing it to the internet
 
-The container speaks plain HTTP. Put HTTPS in front of it: Caddy, nginx, or a Cloudflare Tunnel. Then:
+The container speaks plain HTTP. Put HTTPS in front of it: Caddy, nginx, or a Cloudflare Tunnel. Nothing else needs configuring: cookies are marked Secure automatically when the proxy sends `X-Forwarded-Proto: https`, and plain-http access on your LAN (or over Tailscale) keeps working alongside it. Only set `COOKIE_SECURE=true` if *every* visit goes through HTTPS.
 
-- set `COOKIE_SECURE=true` (it's also set automatically when the proxy sends `X-Forwarded-Proto: https`)
-- set `TRUST_PROXY=true` **only** if that proxy sets `X-Forwarded-For`, so login throttling sees real client IPs
+Login throttling goes by the connecting address and ignores forwarded headers (they can be forged), so behind a tunnel all remote visitors share one throttle. That makes guessing slower, at the cost that a bot can briefly hold up new remote sign-ins; anyone already signed in is unaffected. Sign-ins last 400 days and renew whenever the app is opened, so once a device is in, it stays in. Changing a password or deleting an account signs it out everywhere.
 
 Setup is gated by the code from the container log, so a stranger who finds the URL before you finish can't claim it.
 

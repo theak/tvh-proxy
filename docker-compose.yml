@@ -10,12 +10,10 @@ services:
       # Settings (password stored as an argon2 hash) and sign-in sessions.
       - tvh-proxy-data:/data
     environment:
-      # Uncomment once a reverse proxy you control (Caddy, Cloudflare Tunnel, nginx…)
-      # terminates HTTPS in front of this container: marks cookies Secure and
-      # throttles logins by the real client IP from X-Forwarded-For. Leave them off
-      # for plain-http LAN use, or the browser won't send the session cookie back.
+      # Only if every visit comes through an HTTPS proxy: always mark cookies Secure.
+      # Not needed otherwise (a proxy's X-Forwarded-Proto: https does it per request),
+      # and it breaks plain-http LAN sign-in.
       # - COOKIE_SECURE=true
-      # - TRUST_PROXY=true
       # Optional: encode on an Intel iGPU instead of the CPU.
       # - HWACCEL=vaapi
       # - VIDEO_HEIGHT=720

@@ -167,20 +167,10 @@ fn save_settings_to_disk(state: &AppState, next: config::Settings) -> Result<(),
     Ok(())
 }
 
-/// Who to throttle: the peer address, or the first `X-Forwarded-For` hop when told
-/// to trust the reverse proxy in front of us.
-fn client_key(state: &AppState, parts: &Parts) -> String {
-    if state.trust_proxy
-        && let Some(ip) = parts
-            .headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-    {
-        return ip.to_string();
-    }
+/// Who to throttle: the connecting address. Forwarded-for headers are deliberately
+/// ignored, since they can be forged; behind a tunnel every remote visitor shares the
+/// tunnel's bucket, which only makes guessing slower.
+fn client_key(parts: &Parts) -> String {
     parts
         .extensions
         .get::<ConnectInfo<SocketAddr>>()
@@ -255,7 +245,7 @@ pub async fn serve_static(Path(filepath): Path<String>) -> Response {
 pub async fn status(State(state): State<Shared>, headers: HeaderMap) -> Response {
     let configured = state.settings.read().unwrap().is_some();
     let me = current_account(&state, &headers);
-    no_store(
+    let r = no_store(
         Json(json!({
             "configured": configured,
             "authed": me.is_some(),
@@ -263,7 +253,15 @@ pub async fn status(State(state): State<Shared>, headers: HeaderMap) -> Response
             "admin": me.as_ref().is_some_and(|a| a.admin),
         }))
         .into_response(),
-    )
+    );
+    // The app checks status on launch and when it returns to the foreground, so this
+    // keeps a device that's in use signed in indefinitely.
+    match session_token(&headers) {
+        Some(token) if me.is_some() && state.sessions.lock().unwrap().renew(&token) => {
+            with_cookie(r, auth::session_cookie(&token, is_https(&state, &headers)))
+        }
+        _ => r,
+    }
 }
 
 #[derive(Deserialize)]
@@ -289,7 +287,7 @@ pub async fn setup(
     if state.settings.read().unwrap().is_some() {
         return err(StatusCode::CONFLICT, "Already set up. Sign in instead.");
     }
-    let key = format!("setup:{}", client_key(&state, &parts));
+    let key = format!("setup:{}", client_key(&parts));
     if let Err(secs) = state.limiter.lock().unwrap().check(&key, Instant::now()) {
         return throttled(secs);
     }
@@ -379,7 +377,7 @@ pub async fn login(
     else {
         return err(StatusCode::CONFLICT, "Finish setup first.");
     };
-    let key = client_key(&state, &parts);
+    let key = client_key(&parts);
     if let Err(secs) = state.limiter.lock().unwrap().check(&key, Instant::now()) {
         return throttled(secs);
     }

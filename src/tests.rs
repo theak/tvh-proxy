@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------- config
@@ -607,6 +607,35 @@ fn legacy_sessions_still_load() {
         Some(""),
         "legacy session = admin"
     );
+}
+
+#[test]
+fn sessions_renew_when_used_but_at_most_daily() {
+    let dir = temp_dir("renew-sessions");
+    let path = dir.join("sessions.json");
+    let mut s = auth::Sessions::load(Some(path.clone()));
+    let tok = s.create("x");
+    assert!(!s.renew(&tok), "a fresh session doesn't need renewing");
+    assert!(!s.renew("nope"));
+    // Age the session on disk to a week from expiry, as if last used long ago.
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut stored: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for v in stored.as_object_mut().unwrap().values_mut() {
+        v["exp"] = json!(now + 7 * 86400);
+    }
+    std::fs::write(&path, stored.to_string()).unwrap();
+    let mut s = auth::Sessions::load(Some(path.clone()));
+    assert!(s.renew(&tok));
+    assert!(!s.renew(&tok), "renewed once, not again the same day");
+    // The renewal is persisted, so it survives a restart.
+    let stored: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let exp = stored.as_object().unwrap().values().next().unwrap()["exp"]
+        .as_u64()
+        .unwrap();
+    assert!(exp >= now + auth::SESSION_TTL.as_secs() - 60);
 }
 
 async fn json_req(

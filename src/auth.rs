@@ -12,7 +12,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const COOKIE_NAME: &str = "tvhp_session";
-pub const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 30);
+/// 400 days is the longest cookie lifetime browsers honour. Sessions renew as they're
+/// used (see `Sessions::renew`), so a device that keeps watching never signs in again.
+pub const SESSION_TTL: Duration = Duration::from_secs(60 * 60 * 24 * 400);
+const RENEW_AFTER: Duration = Duration::from_secs(60 * 60 * 24);
 
 fn now_unix() -> u64 {
     SystemTime::now()
@@ -123,6 +126,21 @@ impl Sessions {
             .get(&digest(token))
             .filter(|e| e.exp > now_unix())
             .map(|e| e.account.clone())
+    }
+
+    /// Push a live session's expiry back out to the full TTL, at most once a day.
+    /// True when renewed, meaning the caller should re-send the cookie.
+    pub fn renew(&mut self, token: &str) -> bool {
+        let now = now_unix();
+        let Some(e) = self.map.get_mut(&digest(token)) else {
+            return false;
+        };
+        if e.exp <= now || e.exp > now + SESSION_TTL.as_secs() - RENEW_AFTER.as_secs() {
+            return false;
+        }
+        e.exp = now + SESSION_TTL.as_secs();
+        self.persist();
+        true
     }
 
     pub fn is_valid(&self, token: &str) -> bool {

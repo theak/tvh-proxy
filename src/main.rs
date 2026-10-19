@@ -45,8 +45,6 @@ pub struct AppState {
     pub http: reqwest::Client,
     /// Force the cookie's `Secure` flag (it's also set automatically behind an HTTPS proxy).
     pub cookie_secure: bool,
-    /// Use `X-Forwarded-For` for login throttling (only when behind a reverse proxy you control).
-    pub trust_proxy: bool,
 }
 
 pub type Shared = Arc<AppState>;
@@ -97,7 +95,6 @@ pub fn build_state(data_dir: PathBuf, work_dir: PathBuf, enc: stream::EncoderCon
         logos: Mutex::new(HashMap::new()),
         http,
         cookie_secure: env_flag("COOKIE_SECURE"),
-        trust_proxy: env_flag("TRUST_PROXY"),
     })
 }
 
