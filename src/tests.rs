@@ -629,3 +629,30 @@ fn digest_auth_matches_rfc_2617_example() {
     assert_eq!(c2["nonce"], "abc=");
     assert!(tvh::parse_digest_challenge("Basic realm=x").is_none());
 }
+
+/// Opt-in check against a real tvheadend:
+/// `TVH_TEST_URL=http://host:9981 TVH_TEST_USER=.. TVH_TEST_PASS=.. cargo test live_tvheadend -- --ignored`
+#[tokio::test]
+#[ignore]
+async fn live_tvheadend_login() {
+    let t = tvh::Tvh {
+        base: std::env::var("TVH_TEST_URL").expect("TVH_TEST_URL"),
+        username: std::env::var("TVH_TEST_USER").unwrap_or_default(),
+        password: std::env::var("TVH_TEST_PASS").unwrap_or_default(),
+        client: reqwest::Client::new(),
+    };
+    let channels = t.channels().await.expect("tvheadend accepted our login");
+    assert!(!channels.is_empty());
+    // An admin-only endpoint forces the Digest handshake even where anonymous LAN
+    // access is allowed for the channel list.
+    if !t.username.is_empty() {
+        t.json("api/config/load")
+            .await
+            .expect("Digest login to an admin endpoint");
+    }
+    let mut wrong = t.clone();
+    wrong.password = "definitely-not-the-password".into();
+    if !wrong.username.is_empty() {
+        assert!(wrong.channels().await.is_err() || std::env::var("TVH_TEST_ANON_OK").is_ok());
+    }
+}

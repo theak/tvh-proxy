@@ -289,7 +289,7 @@ impl Tvh {
         retry.send().await
     }
 
-    async fn json(&self, path: &str) -> Result<Value, String> {
+    pub(crate) async fn json(&self, path: &str) -> Result<Value, String> {
         let resp = self
             .send(path)
             .await
