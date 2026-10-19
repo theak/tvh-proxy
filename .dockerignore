@@ -1,0 +1,16 @@
+# The builder only needs the crate sources + the embedded frontend assets
+# (Cargo.toml, Cargo.lock, src/, templates/, static/).
+target
+.git
+.github
+.gitignore
+.dockerignore
+node_modules
+test
+package.json
+package-lock.json
+docker-compose.yml
+README.md
+docs
+.env
+.DS_Store

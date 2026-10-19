@@ -1,0 +1,27 @@
+[package]
+name = "tvh-proxy"
+version = "0.1.0"
+edition = "2024"
+description = "A sleek, password-protected live TV front end for tvheadend that works on iPhone"
+license = "MIT"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# rustls + bundled roots so the scratch-free alpine runtime needs no CA bundle for
+# HTTPS logo fetches. default-features=false drops native-tls/OpenSSL (static musl).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
+argon2 = "0.5"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[profile.release]
+strip = true
+lto = "thin"

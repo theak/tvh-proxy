@@ -1,0 +1,9 @@
+{
+  "name": "tvh-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frontend unit tests for tvh-proxy (node's built-in test runner, no dependencies)",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

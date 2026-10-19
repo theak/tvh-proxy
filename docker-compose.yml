@@ -1,0 +1,30 @@
+services:
+  tvh-proxy:
+    image: akshaykannan/tvh-proxy
+    container_name: tvh-proxy
+    # To build locally instead of pulling from Docker Hub, uncomment:
+    # build: .
+    ports:
+      - "9982:9982"
+    volumes:
+      # Settings (password stored as an argon2 hash) and sign-in sessions.
+      - tvh-proxy-data:/data
+    environment:
+      # Set when a reverse proxy you control (Caddy, Cloudflare Tunnel, nginx…)
+      # terminates HTTPS in front of this container: marks cookies Secure and
+      # throttles logins by the real client IP from X-Forwarded-For.
+      - COOKIE_SECURE=true
+      - TRUST_PROXY=true
+      # Optional: encode on an Intel iGPU instead of the CPU.
+      # - HWACCEL=vaapi
+      # - VIDEO_HEIGHT=720
+      # - VIDEO_BITRATE_KBPS=3500
+    # For HWACCEL=vaapi, pass the GPU through (and add the host's `render` group id):
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - "104"
+    restart: unless-stopped
+
+volumes:
+  tvh-proxy-data:

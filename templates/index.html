@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0B0B0C">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TV">
+  <meta name="referrer" content="no-referrer">
+  <title>TV</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/img/icon.svg?v={{v}}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/img/icon-180.png?v={{v}}">
+  <link rel="preload" href="/static/fonts/geist-latin.woff2?v={{v}}" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/css/app.css?v={{v}}">
+</head>
+<body>
+  <div id="boot" class="boot"><span class="boot-dot"></span></div>
+
+  <!-- ============ First-run setup ============ -->
+  <main id="setup" class="page" hidden>
+    <form id="setup-form" class="card card-wide" autocomplete="off" novalidate>
+      <header class="card-head">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <h1>Set up your TV</h1>
+          <p class="sub">One-time setup. Everything after this happens in the guide.</p>
+        </div>
+      </header>
+
+      <label class="field">
+        <span class="label">Setup code</span>
+        <input name="setup_code" placeholder="XXXX-XXXX" autocapitalize="characters" spellcheck="false" required>
+        <span class="hint">Printed in the container log when the app starts (<code>docker logs tvh-proxy</code>).</span>
+      </label>
+
+      <section class="step">
+        <div class="step-num">0</div>
+        <div class="step-body">
+          <h2>tvheadend</h2>
+          <label class="field">
+            <span class="label">Address</span>
+            <input name="tvh_url" placeholder="http://192.168.0.149:9981" inputmode="url" spellcheck="false" required>
+          </label>
+          <details class="more">
+            <summary>tvheadend needs a login</summary>
+            <div class="row2">
+              <label class="field"><span class="label">tvheadend username</span><input name="tvh_username" spellcheck="false"></label>
+              <label class="field"><span class="label">tvheadend password</span><input name="tvh_password" type="password"></label>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h2>Your sign-in</h2>
+          <label class="field"><span class="label">Username</span><input name="username" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
+          <div class="row2">
+            <label class="field"><span class="label">Password</span><input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+            <label class="field"><span class="label">Confirm password</span><input name="confirm" type="password" autocomplete="new-password" required></label>
+          </div>
+          <div class="callout">
+            <strong>Write these down.</strong> They won't be shown again, and they're the only way in.
+          </div>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h2>Jump straight to</h2>
+          <label class="field">
+            <span class="label">Keywords, comma separated</span>
+            <input name="keywords" placeholder="nfl, olympics" spellcheck="false">
+            <span class="hint">When you open the app, the first keyword that matches something on air (case-insensitive) tunes straight to that channel. Otherwise you'll see the guide.</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h2>Viewers at once</h2>
+          <div class="stepper" data-stepper>
+            <button type="button" class="round" data-step="-1" aria-label="Fewer">−</button>
+            <input name="max_viewers" type="number" min="1" max="8" value="1" inputmode="numeric">
+            <button type="button" class="round" data-step="1" aria-label="More">+</button>
+          </div>
+          <span class="hint">How many different channels can play at once — usually your number of tuners. Anyone else who opens the app joins the current channel and can't change it.</span>
+        </div>
+      </section>
+
+      <p class="form-error" role="alert" hidden></p>
+      <button class="btn-primary" type="submit"><span>Start watching</span></button>
+    </form>
+  </main>
+
+  <!-- ============ Sign in ============ -->
+  <main id="login" class="page" hidden>
+    <form id="login-form" class="card" novalidate>
+      <header class="card-head">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div><h1>TV</h1><p class="sub">Sign in to watch.</p></div>
+      </header>
+      <label class="field"><span class="label">Username</span><input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+      <label class="field"><span class="label">Password</span><input name="password" type="password" autocomplete="current-password" required></label>
+      <p class="form-error" role="alert" hidden></p>
+      <button class="btn-primary" type="submit"><span>Sign in</span></button>
+    </form>
+  </main>
+
+  <!-- ============ Viewer ============ -->
+  <main id="tv" class="tv" hidden>
+    <div class="stage">
+      <div class="ambient" aria-hidden="true"></div>
+      <video id="video" playsinline webkit-playsinline preload="auto"></video>
+
+      <div id="loader" class="loader" hidden>
+        <div class="loader-core">
+          <div class="rings" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div class="loader-kicker">Channel</div>
+          <div id="loader-num" class="loader-num"></div>
+          <div id="loader-name" class="loader-name"></div>
+          <div class="loader-bar"><span id="loader-fill"></span></div>
+          <div class="loader-stage"><span id="loader-stage"></span></div>
+        </div>
+      </div>
+
+      <div id="error-panel" class="error-panel" hidden>
+        <div class="error-kicker">No picture</div>
+        <p id="error-msg"></p>
+        <div class="error-actions">
+          <button id="retry" class="btn-primary small" type="button">Try again</button>
+          <button class="btn-glass" type="button" data-open-guide>Open guide</button>
+        </div>
+      </div>
+
+      <div id="peek" class="peek" aria-live="polite">
+        <div id="peek-arrow" class="peek-arrow">↑</div>
+        <div class="peek-text">
+          <div id="peek-hint" class="peek-hint">Next channel</div>
+          <div id="peek-name" class="peek-name"></div>
+          <div id="peek-title" class="peek-title"></div>
+        </div>
+      </div>
+
+      <button id="sound" class="sound-pill" type="button" hidden>
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6m0-6-5 6"/></svg>
+        <span>Tap for sound</span>
+      </button>
+
+      <div id="lock-banner" class="lock-banner" hidden>
+        <svg viewBox="0 0 24 24" width="16" height="16"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+        <span>Another viewer is active — please close that one to change the channel.</span>
+      </div>
+
+      <div id="toast" class="toast" hidden></div>
+
+      <header class="ov ov-top">
+        <div class="ov-left">
+          <div class="live-pill"><span class="live-dot"></span><span>Live</span></div>
+          <div id="cur-num" class="mono dim"></div>
+          <div id="cur-name" class="cur-name"></div>
+        </div>
+        <div class="ov-right">
+          <div class="clock mono" data-clock></div>
+          <button class="btn-glass icon-only-sm" type="button" id="open-settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+          </button>
+          <button class="btn-glass" type="button" data-open-guide aria-label="Open guide">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M3 5h18M3 12h18M3 19h18"/><path d="M9 3v4M15 10v4M7 17v4"/></svg>
+            <span>Guide</span><kbd class="desk">G</kbd>
+          </button>
+        </div>
+      </header>
+
+      <footer class="ov ov-bottom">
+        <div class="now">
+          <div class="now-meta">
+            <span id="cur-cat" class="cat-pill" hidden></span>
+            <span id="cur-range" class="mono dim"></span>
+          </div>
+          <div id="cur-title" class="now-title"></div>
+          <div class="now-progress mono">
+            <span id="cur-start"></span>
+            <div class="bar"><span id="cur-bar"></span></div>
+            <span id="cur-end"></span>
+            <span id="cur-left" class="accent"></span>
+          </div>
+          <div id="cur-desc" class="now-desc"></div>
+          <div id="next-row" class="next-row">
+            <span class="kicker">Up next</span>
+            <span id="next-time" class="mono dim"></span>
+            <span id="next-title" class="ellipsis"></span>
+          </div>
+        </div>
+        <div class="switcher">
+          <div class="sw-row">
+            <button id="ch-up" class="round glass" type="button" aria-label="Next channel" title="Next channel (↑)"><svg viewBox="0 0 24 24" width="20" height="20"><path d="m18 15-6-6-6 6"/></svg></button>
+            <div class="sw-info desk"><div class="sw-name"><span id="up-num" class="mono dim"></span><span id="up-name"></span></div><div id="up-title" class="sw-title"></div></div>
+          </div>
+          <div class="sw-row">
+            <button id="ch-down" class="round glass" type="button" aria-label="Previous channel" title="Previous channel (↓)"><svg viewBox="0 0 24 24" width="20" height="20"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="sw-info desk"><div class="sw-name"><span id="dn-num" class="mono dim"></span><span id="dn-name"></span></div><div id="dn-title" class="sw-title"></div></div>
+          </div>
+          <div class="sw-hint mono"><span class="desk">↑ ↓ change channel · G guide</span><span class="touch">swipe ↑ ↓ to change channel</span></div>
+        </div>
+      </footer>
+    </div>
+
+    <!-- Guide -->
+    <section id="guide" class="guide" aria-hidden="true">
+      <div class="g-head">
+        <div class="g-title"><h2>Guide</h2><span id="g-date" class="mono dim"></span></div>
+        <div class="ov-right">
+          <div class="clock mono" data-clock></div>
+          <button id="close-guide" class="btn-glass" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8"/></svg>
+            <span>Back to TV</span><kbd class="desk">Esc</kbd>
+          </button>
+        </div>
+      </div>
+      <div class="g-hero">
+        <div class="g-hero-meta"><span id="h-num" class="mono dim"></span><span id="h-name" class="h-name"></span><span id="h-status" class="status-pill"></span></div>
+        <div id="h-title" class="h-title"></div>
+        <div class="g-hero-sub mono"><span id="h-meta"></span><div id="h-bar-wrap" class="h-bar"><span id="h-bar"></span></div></div>
+        <div id="h-desc" class="h-desc"></div>
+        <div class="g-hero-actions">
+          <button id="watch-focused" class="btn-primary small" type="button">
+            <svg viewBox="0 0 24 24" width="16" height="16" class="fill"><path d="M7 4.5v15l12-7.5z"/></svg>
+            <span id="watch-label">Watch now</span><kbd class="desk dark">↵</kbd>
+          </button>
+          <span class="mono dim desk">↑ ↓ ← → to browse</span>
+        </div>
+      </div>
+      <div id="grid" class="grid" tabindex="-1">
+        <div id="grid-inner" class="grid-inner"></div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <div id="settings" class="sheet-wrap" hidden>
+      <form id="settings-form" class="sheet" novalidate>
+        <div class="sheet-head">
+          <h2>Settings</h2>
+          <button type="button" class="round glass" id="close-settings" aria-label="Close">✕</button>
+        </div>
+        <label class="field"><span class="label">tvheadend address</span><input name="tvh_url" spellcheck="false" inputmode="url"></label>
+        <div class="row2">
+          <label class="field"><span class="label">tvheadend username</span><input name="tvh_username" spellcheck="false" placeholder="(none)"></label>
+          <label class="field"><span class="label">tvheadend password</span><input name="tvh_password" type="password" placeholder="unchanged"></label>
+        </div>
+        <label class="field"><span class="label">Jump-to keywords</span><input name="keywords" spellcheck="false" placeholder="nfl, olympics"></label>
+        <label class="field"><span class="label">Viewers at once</span>
+          <div class="stepper" data-stepper>
+            <button type="button" class="round" data-step="-1" aria-label="Fewer">−</button>
+            <input name="max_viewers" type="number" min="1" max="8" inputmode="numeric">
+            <button type="button" class="round" data-step="1" aria-label="More">+</button>
+          </div>
+        </label>
+        <details class="more">
+          <summary>Change password</summary>
+          <label class="field"><span class="label">Current password</span><input name="current_password" type="password" autocomplete="current-password"></label>
+          <div class="row2">
+            <label class="field"><span class="label">New password</span><input name="new_password" type="password" autocomplete="new-password"></label>
+            <label class="field"><span class="label">Confirm</span><input name="confirm" type="password" autocomplete="new-password"></label>
+          </div>
+        </details>
+        <p class="form-error" role="alert" hidden></p>
+        <div class="sheet-actions">
+          <button type="button" class="btn-glass" id="logout">Sign out</button>
+          <button type="submit" class="btn-primary small"><span>Save</span></button>
+        </div>
+      </form>
+    </div>
+  </main>
+
+  <script src="/static/js/hls.min.js?v={{v}}" defer></script>
+  <script src="/static/js/lib.js?v={{v}}" defer></script>
+  <script src="/static/js/app.js?v={{v}}" defer></script>
+</body>
+</html>
