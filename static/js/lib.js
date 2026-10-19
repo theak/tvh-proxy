@@ -62,10 +62,11 @@
     return Math.min(1, Math.max(0, (now - ev.start) / (ev.stop - ev.start)));
   }
 
-  /** Wrap-around neighbour index in a channel list. `dir` is +1 (up) or -1 (down). */
+  /** Neighbour index in a channel list, or -1 past either end (no wrap-around).
+   *  `dir` is +1 (up) or -1 (down). */
   function step(len, idx, dir) {
-    if (!len) return -1;
-    return ((idx + dir) % len + len) % len;
+    const next = idx + dir;
+    return next >= 0 && next < len ? next : -1;
   }
 
   /** Guide time window: starts at the half hour before `now`, `hours` long. */

@@ -169,6 +169,16 @@
       const nn = ch && L.nowNext(S.byCh, ch.uuid, t).cur;
       setText(pre + '-title', nn ? nn.title : '');
     }
+    updateSwitcher();
+  }
+
+  // Up/down are disabled at either end of the list, and for a viewer without the remote.
+  function updateSwitcher() {
+    const locked = !!(S.view && S.view.role === 'follower');
+    const idx = S.pendingIdx != null ? S.pendingIdx : S.chIdx.get(S.current);
+    const len = S.channels.length;
+    $('ch-up').disabled = locked || idx == null || L.step(len, idx, 1) < 0;
+    $('ch-down').disabled = locked || idx == null || L.step(len, idx, -1) < 0;
   }
 
   // ------------------------------------------------------------ viewer: chrome, loader, toasts
@@ -328,8 +338,7 @@
     const locked = v.role === 'follower';
     $('tv').classList.toggle('locked', locked);
     $('lock-banner').hidden = !locked;
-    $('ch-up').disabled = locked;
-    $('ch-down').disabled = locked;
+    updateSwitcher();
     updateWatchButton();
     const sv = v.stream;
     if (!sv) {
@@ -408,7 +417,9 @@
     if (!S.channels.length) return;
     if (S.view && S.view.role === 'follower') { flashLock(); return; }
     const base = S.pendingIdx != null ? S.pendingIdx : (S.chIdx.get(S.current) ?? 0);
-    S.pendingIdx = L.step(S.channels.length, base, dir);
+    const next = L.step(S.channels.length, base, dir);
+    if (next < 0) return;
+    S.pendingIdx = next;
     const c = S.channels[S.pendingIdx];
     showPeek(dir, c);
     showChrome();

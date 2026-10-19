@@ -36,9 +36,11 @@ test('progress is clamped', () => {
   assert.equal(L.progress(null, 5), 0);
 });
 
-test('channel stepping wraps around', () => {
-  assert.equal(L.step(3, 2, 1), 0);
-  assert.equal(L.step(3, 0, -1), 2);
+test('channel stepping stops at either end', () => {
+  assert.equal(L.step(3, 1, 1), 2);
+  assert.equal(L.step(3, 1, -1), 0);
+  assert.equal(L.step(3, 2, 1), -1);
+  assert.equal(L.step(3, 0, -1), -1);
   assert.equal(L.step(0, 0, 1), -1);
 });
 
