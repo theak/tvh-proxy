@@ -172,14 +172,13 @@
     updateSwitcher();
   }
 
-  // Up/down are hidden at either end of the list, and disabled for a viewer without the remote.
+  // Up/down only show when there's a channel that way and this viewer holds the remote.
   function updateSwitcher() {
     const locked = !!(S.view && S.view.role === 'follower');
     const idx = S.pendingIdx != null ? S.pendingIdx : S.chIdx.get(S.current);
     for (const [id, dir] of [['ch-up', 1], ['ch-down', -1]]) {
-      const end = idx == null || L.step(S.channels.length, idx, dir) < 0;
-      $(id).disabled = locked;
-      $(id).parentElement.style.visibility = end ? 'hidden' : '';
+      const show = !locked && idx != null && L.step(S.channels.length, idx, dir) >= 0;
+      $(id).parentElement.style.visibility = show ? '' : 'hidden';
     }
   }
 
