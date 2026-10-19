@@ -114,19 +114,57 @@ fn session_token(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-fn is_authed(state: &AppState, headers: &HeaderMap) -> bool {
-    state.settings.read().unwrap().is_some()
-        && session_token(headers).is_some_and(|t| state.sessions.lock().unwrap().is_valid(&t))
+/// The account behind this request's session cookie, if any. Pre-accounts sessions
+/// belong to the admin.
+fn current_account(state: &AppState, headers: &HeaderMap) -> Option<config::Account> {
+    let token = session_token(headers)?;
+    let id = state.sessions.lock().unwrap().account_for(&token)?;
+    let settings = state.settings.read().unwrap();
+    let s = settings.as_ref()?;
+    if id.is_empty() {
+        s.first_admin().cloned()
+    } else {
+        s.account(&id).cloned()
+    }
 }
 
-/// Gate for protected routes.
+/// Gate for protected routes; yields the signed-in account.
 #[allow(clippy::result_large_err)]
-fn require_auth(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
-    if is_authed(state, headers) {
-        Ok(())
+fn require_auth(state: &AppState, headers: &HeaderMap) -> Result<config::Account, Response> {
+    current_account(state, headers).ok_or_else(|| err(StatusCode::UNAUTHORIZED, "Please sign in."))
+}
+
+/// Gate for settings and account management.
+#[allow(clippy::result_large_err)]
+fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<config::Account, Response> {
+    let me = require_auth(state, headers)?;
+    if me.admin {
+        Ok(me)
     } else {
-        Err(err(StatusCode::UNAUTHORIZED, "Please sign in."))
+        Err(err(
+            StatusCode::FORBIDDEN,
+            "Only the admin can change settings.",
+        ))
     }
+}
+
+/// A fixed argon2 hash to verify against when the username doesn't exist, so an
+/// unknown username takes as long as a wrong password.
+fn dummy_hash() -> &'static str {
+    static H: OnceLock<String> = OnceLock::new();
+    H.get_or_init(|| config::hash_password("not-a-real-password"))
+}
+
+#[allow(clippy::result_large_err)]
+fn save_settings_to_disk(state: &AppState, next: config::Settings) -> Result<(), Response> {
+    if let Err(e) = config::save(&state.data_dir, &next) {
+        return Err(err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Couldn't save settings: {e}"),
+        ));
+    }
+    *state.settings.write().unwrap() = Some(next);
+    Ok(())
 }
 
 /// Who to throttle: the peer address, or the first `X-Forwarded-For` hop when told
@@ -216,9 +254,15 @@ pub async fn serve_static(Path(filepath): Path<String>) -> Response {
 
 pub async fn status(State(state): State<Shared>, headers: HeaderMap) -> Response {
     let configured = state.settings.read().unwrap().is_some();
+    let me = current_account(&state, &headers);
     no_store(
-        Json(json!({ "configured": configured, "authed": is_authed(&state, &headers) }))
-            .into_response(),
+        Json(json!({
+            "configured": configured,
+            "authed": me.is_some(),
+            "username": me.as_ref().map(|a| a.username.clone()),
+            "admin": me.as_ref().is_some_and(|a| a.admin),
+        }))
+        .into_response(),
     )
 }
 
@@ -288,12 +332,21 @@ pub async fn setup(
     if let Err(e) = probe.channels().await {
         return err(StatusCode::BAD_GATEWAY, e);
     }
+    let admin = config::Account {
+        id: config::new_account_id(),
+        username: b.username.trim().into(),
+        password_hash: config::hash_password(&b.password),
+        admin: true,
+        priority: false,
+    };
+    let admin_id = admin.id.clone();
     let settings = config::Settings {
         tvh_url,
         tvh_username: b.tvh_username.trim().into(),
         tvh_password: b.tvh_password,
-        username: b.username.trim().into(),
-        password_hash: config::hash_password(&b.password),
+        accounts: vec![admin],
+        username: None,
+        password_hash: None,
         keywords: config::parse_keywords(&b.keywords),
         max_viewers,
     };
@@ -306,7 +359,7 @@ pub async fn setup(
     *state.settings.write().unwrap() = Some(settings);
     *state.setup_code.lock().unwrap() = None;
     state.hub.lock().unwrap().set_max(max_viewers);
-    let token = state.sessions.lock().unwrap().create();
+    let token = state.sessions.lock().unwrap().create(&admin_id);
     with_cookie(
         Json(json!({ "ok": true })).into_response(),
         auth::session_cookie(&token, is_https(&state, &parts.headers)),
@@ -324,12 +377,12 @@ pub async fn login(
     parts: Parts,
     Json(b): Json<LoginBody>,
 ) -> Response {
-    let Some((user, hash)) = state
+    let Some(account) = state
         .settings
         .read()
         .unwrap()
         .as_ref()
-        .map(|s| (s.username.clone(), s.password_hash.clone()))
+        .map(|s| s.account_by_name(&b.username).cloned())
     else {
         return err(StatusCode::CONFLICT, "Finish setup first.");
     };
@@ -337,12 +390,16 @@ pub async fn login(
     if let Err(secs) = state.limiter.lock().unwrap().check(&key, Instant::now()) {
         return throttled(secs);
     }
-    // Always run the (slow) hash check so a wrong username takes as long as a wrong password.
+    // Always run the (slow) hash check so an unknown username takes as long as a wrong password.
     let password = b.password;
+    let hash = account
+        .as_ref()
+        .map(|a| a.password_hash.clone())
+        .unwrap_or_else(|| dummy_hash().to_string());
     let hash_ok = tokio::task::spawn_blocking(move || config::verify_password(&password, &hash))
         .await
         .unwrap_or(false);
-    if !(hash_ok && b.username.trim() == user) {
+    let Some(account) = account.filter(|_| hash_ok) else {
         state
             .limiter
             .lock()
@@ -350,9 +407,9 @@ pub async fn login(
             .record_failure(&key, Instant::now());
         tokio::time::sleep(Duration::from_millis(400)).await;
         return err(StatusCode::UNAUTHORIZED, "Wrong username or password.");
-    }
+    };
     state.limiter.lock().unwrap().record_success(&key);
-    let token = state.sessions.lock().unwrap().create();
+    let token = state.sessions.lock().unwrap().create(&account.id);
     with_cookie(
         Json(json!({ "ok": true })).into_response(),
         auth::session_cookie(&token, is_https(&state, &parts.headers)),
@@ -372,9 +429,10 @@ pub async fn logout(State(state): State<Shared>, headers: HeaderMap) -> Response
 // ---------------------------------------------------------------- settings
 
 pub async fn get_settings(State(state): State<Shared>, headers: HeaderMap) -> Response {
-    if let Err(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let me = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     let s = state
         .settings
         .read()
@@ -386,13 +444,22 @@ pub async fn get_settings(State(state): State<Shared>, headers: HeaderMap) -> Re
             "tvh_url": s.tvh_url,
             "tvh_username": s.tvh_username,
             "has_tvh_password": !s.tvh_password.is_empty(),
-            "username": s.username,
+            "username": me.username,
             "keywords": s.keywords.join(", "),
             "max_viewers": s.max_viewers,
             "max_viewers_limit": config::MAX_VIEWERS_LIMIT,
+            "accounts": accounts_json(&s, &me),
         }))
         .into_response(),
     )
+}
+
+fn accounts_json(s: &config::Settings, me: &config::Account) -> Value {
+    json!(s
+        .accounts
+        .iter()
+        .map(|a| json!({ "id": a.id, "username": a.username, "admin": a.admin, "priority": a.priority, "me": a.id == me.id }))
+        .collect::<Vec<_>>())
 }
 
 #[derive(Deserialize)]
@@ -418,9 +485,10 @@ pub async fn save_settings(
     headers: HeaderMap,
     Json(b): Json<SettingsBody>,
 ) -> Response {
-    if let Err(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let me = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     let mut next = state
         .settings
         .read()
@@ -439,17 +507,20 @@ pub async fn save_settings(
     };
     let password_change = !b.new_password.is_empty();
     if password_change {
-        let (current, hash) = (b.current_password.clone(), next.password_hash.clone());
+        let (current, hash) = (b.current_password.clone(), me.password_hash.clone());
         if !tokio::task::spawn_blocking(move || config::verify_password(&current, &hash))
             .await
             .unwrap_or(false)
         {
             return err(StatusCode::FORBIDDEN, "Your current password isn't right.");
         }
-        if let Err(e) = config::validate_credentials(&next.username, &b.new_password, &b.confirm) {
+        if let Err(e) = config::validate_credentials(&me.username, &b.new_password, &b.confirm) {
             return err(StatusCode::BAD_REQUEST, e);
         }
-        next.password_hash = config::hash_password(&b.new_password);
+        let hash = config::hash_password(&b.new_password);
+        if let Some(a) = next.accounts.iter_mut().find(|a| a.id == me.id) {
+            a.password_hash = hash;
+        }
     }
     let tvh_changed = tvh_url != next.tvh_url
         || b.tvh_username.trim() != next.tvh_username
@@ -474,23 +545,168 @@ pub async fn save_settings(
         *state.guide.lock().await = None;
         state.logos.lock().unwrap().clear();
     }
-    if let Err(e) = config::save(&state.data_dir, &next) {
-        return err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Couldn't save settings: {e}"),
-        );
+    if let Err(r) = save_settings_to_disk(&state, next) {
+        return r;
     }
-    *state.settings.write().unwrap() = Some(next);
     state.hub.lock().unwrap().set_max(max_viewers);
     if password_change {
-        // Sign out every other device; this one stays signed in.
+        // Sign this account out everywhere else; this device stays signed in.
+        state.sessions.lock().unwrap().revoke_account(
+            &me.id,
+            session_token(&headers).as_deref(),
+            true,
+        );
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+// ---------------------------------------------------------------- accounts (admin)
+
+#[derive(Deserialize)]
+pub struct NewAccountBody {
+    pub username: String,
+    pub password: String,
+    pub confirm: String,
+    #[serde(default)]
+    pub priority: bool,
+}
+
+pub async fn create_account(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(b): Json<NewAccountBody>,
+) -> Response {
+    let me = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let mut next = state.settings.read().unwrap().clone().expect("configured");
+    let username = match config::validate_new_username(&next, &b.username) {
+        Ok(u) => u,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+    if let Err(e) = config::validate_credentials(&username, &b.password, &b.confirm) {
+        return err(StatusCode::BAD_REQUEST, e);
+    }
+    let password = b.password.clone();
+    let hash = tokio::task::spawn_blocking(move || config::hash_password(&password))
+        .await
+        .expect("hash");
+    let id = config::new_account_id();
+    next.accounts.push(config::Account {
+        id: id.clone(),
+        username,
+        password_hash: hash,
+        admin: false,
+        priority: false,
+    });
+    if b.priority {
+        next.set_priority(Some(&id));
+    }
+    let body = accounts_json(&next, &me);
+    if let Err(r) = save_settings_to_disk(&state, next) {
+        return r;
+    }
+    no_store(Json(json!({ "accounts": body })).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct UpdateAccountBody {
+    /// Make this the priority account (`true`) or clear it (`false`); absent = unchanged.
+    pub priority: Option<bool>,
+    /// Set a new password (admin reset); absent = unchanged.
+    pub password: Option<String>,
+    #[serde(default)]
+    pub confirm: String,
+}
+
+pub async fn update_account(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(b): Json<UpdateAccountBody>,
+) -> Response {
+    let me = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let mut next = state.settings.read().unwrap().clone().expect("configured");
+    let Some(target) = next.account(&id).cloned() else {
+        return err(StatusCode::NOT_FOUND, "No such account.");
+    };
+    let mut new_hash = None;
+    if let Some(pw) = &b.password {
+        if let Err(e) = config::validate_credentials(&target.username, pw, &b.confirm) {
+            return err(StatusCode::BAD_REQUEST, e);
+        }
+        let pw = pw.clone();
+        new_hash = Some(
+            tokio::task::spawn_blocking(move || config::hash_password(&pw))
+                .await
+                .expect("hash"),
+        );
+    }
+    if let Some(h) = new_hash.clone()
+        && let Some(a) = next.accounts.iter_mut().find(|a| a.id == id)
+    {
+        a.password_hash = h;
+    }
+    match b.priority {
+        Some(true) => next.set_priority(Some(&id)),
+        Some(false) if target.priority => next.set_priority(None),
+        _ => {}
+    }
+    let body = accounts_json(&next, &me);
+    if let Err(r) = save_settings_to_disk(&state, next) {
+        return r;
+    }
+    if new_hash.is_some() {
+        // A reset signs that account out everywhere (except the admin's own device
+        // when resetting their own password here).
+        let keep = if id == me.id {
+            session_token(&headers)
+        } else {
+            None
+        };
         state
             .sessions
             .lock()
             .unwrap()
-            .revoke_all_except(session_token(&headers).as_deref());
+            .revoke_account(&id, keep.as_deref(), target.admin);
     }
-    Json(json!({ "ok": true })).into_response()
+    no_store(Json(json!({ "accounts": body })).into_response())
+}
+
+pub async fn delete_account(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let me = match require_admin(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let mut next = state.settings.read().unwrap().clone().expect("configured");
+    let Some(target) = next.account(&id).cloned() else {
+        return err(StatusCode::NOT_FOUND, "No such account.");
+    };
+    if target.admin {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "The admin account can't be deleted.",
+        );
+    }
+    next.accounts.retain(|a| a.id != id);
+    let body = accounts_json(&next, &me);
+    if let Err(r) = save_settings_to_disk(&state, next) {
+        return r;
+    }
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .revoke_account(&id, None, false);
+    no_store(Json(json!({ "accounts": body })).into_response())
 }
 
 // ---------------------------------------------------------------- guide
@@ -643,17 +859,18 @@ pub async fn heartbeat(
     headers: HeaderMap,
     Json(b): Json<ClientBody>,
 ) -> Response {
-    if let Err(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let me = match require_auth(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     if !valid_client_id(&b.client) {
         return err(StatusCode::BAD_REQUEST, "bad client id");
     }
-    state
-        .hub
-        .lock()
-        .unwrap()
-        .heartbeat(&b.client, Instant::now());
+    {
+        let mut hub = state.hub.lock().unwrap();
+        hub.mark_priority(&b.client, me.priority);
+        hub.heartbeat(&b.client, Instant::now());
+    }
     no_store(Json(view_json(&state, &b.client)).into_response())
 }
 
@@ -670,17 +887,18 @@ pub async fn watch(
     headers: HeaderMap,
     Json(b): Json<WatchBody>,
 ) -> Response {
-    if let Err(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let me = match require_auth(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     if !valid_client_id(&b.client) || !valid_channel_id(&b.channel) {
         return err(StatusCode::BAD_REQUEST, "bad request");
     }
-    let result = state
-        .hub
-        .lock()
-        .unwrap()
-        .watch(&b.client, &b.channel, b.retry, Instant::now());
+    let result = {
+        let mut hub = state.hub.lock().unwrap();
+        hub.mark_priority(&b.client, me.priority);
+        hub.watch(&b.client, &b.channel, b.retry, Instant::now())
+    };
     match result {
         Ok(actions) => {
             apply(&state, actions).await;
@@ -701,13 +919,18 @@ pub async fn stop(
     headers: HeaderMap,
     Json(b): Json<ClientBody>,
 ) -> Response {
-    if let Err(r) = require_auth(&state, &headers) {
-        return r;
-    }
+    let me = match require_auth(&state, &headers) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
     if !valid_client_id(&b.client) {
         return err(StatusCode::BAD_REQUEST, "bad client id");
     }
-    let actions = state.hub.lock().unwrap().stop(&b.client, Instant::now());
+    let actions = {
+        let mut hub = state.hub.lock().unwrap();
+        hub.mark_priority(&b.client, me.priority);
+        hub.stop(&b.client, Instant::now())
+    };
     apply(&state, actions).await;
     no_store(Json(view_json(&state, &b.client)).into_response())
 }

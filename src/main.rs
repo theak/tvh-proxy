@@ -121,6 +121,11 @@ pub fn build_router(state: Shared) -> Router {
         .route("/api/watch", post(handlers::watch))
         .route("/api/leave", post(handlers::leave))
         .route("/api/stop", post(handlers::stop))
+        .route("/api/accounts", post(handlers::create_account))
+        .route(
+            "/api/accounts/{id}",
+            post(handlers::update_account).delete(handlers::delete_account),
+        )
         .route("/hls/{id}/{generation}/{file}", get(handlers::hls))
         .route("/logo/{uuid}", get(handlers::logo))
         .layer(axum::middleware::map_response(security_headers))
@@ -153,6 +158,33 @@ async fn security_headers(mut resp: axum::response::Response) -> axum::response:
     resp
 }
 
+fn reset_admin(data_dir: &std::path::Path) -> i32 {
+    let Some(mut settings) = config::load(data_dir) else {
+        eprintln!(
+            "No config.json in {} — open the app to run first-run setup instead.",
+            data_dir.display()
+        );
+        return 1;
+    };
+    let Some(admin) = settings.accounts.iter_mut().find(|a| a.admin) else {
+        eprintln!("No admin account found.");
+        return 1;
+    };
+    let password = auth::random_token()[..16].to_string();
+    admin.password_hash = config::hash_password(&password);
+    let (id, name) = (admin.id.clone(), admin.username.clone());
+    if let Err(e) = config::save(data_dir, &settings) {
+        eprintln!("Couldn't save config.json: {e}");
+        return 1;
+    }
+    auth::Sessions::load(Some(data_dir.join("sessions.json"))).revoke_account(&id, None, true);
+    println!("Admin \"{name}\" now has the password: {password}");
+    println!(
+        "Restart the container to apply it (e.g. `docker restart tvh-proxy`), then sign in and change it in Settings."
+    );
+    0
+}
+
 fn port() -> u16 {
     std::env::var("PORT")
         .ok()
@@ -174,6 +206,12 @@ async fn main() {
     }
 
     let data_dir = PathBuf::from(std::env::var("DATA_DIR").unwrap_or_else(|_| "/data".into()));
+
+    // `reset-admin`: the way back in if the admin password is lost, without wiping
+    // the other accounts. Run inside the container, then restart it.
+    if std::env::args().nth(1).as_deref() == Some("reset-admin") {
+        std::process::exit(reset_admin(&data_dir));
+    }
     let work_dir = std::env::temp_dir().join("tvh-proxy");
     let state = build_state(data_dir, work_dir, stream::EncoderConfig::from_env());
 

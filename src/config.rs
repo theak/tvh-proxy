@@ -1,6 +1,6 @@
 //! Persisted settings (`$DATA_DIR/config.json`), written once by first-run setup and
-//! edited later from the settings sheet. The password is only ever stored as an
-//! argon2 hash; it is never echoed back to any client.
+//! edited later by the admin on the settings page. Passwords are only ever stored as
+//! argon2 hashes; they are never echoed back to any client.
 
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
@@ -8,6 +8,19 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const MAX_VIEWERS_LIMIT: u32 = 8;
+
+/// A sign-in. The account created by first-run setup is the admin; only admins see
+/// settings. At most one account is the priority viewer (see `stream::Hub`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Account {
+    pub id: String,
+    pub username: String,
+    pub password_hash: String,
+    #[serde(default)]
+    pub admin: bool,
+    #[serde(default)]
+    pub priority: bool,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
@@ -18,13 +31,79 @@ pub struct Settings {
     pub tvh_username: String,
     #[serde(default)]
     pub tvh_password: String,
-    pub username: String,
-    pub password_hash: String,
+    #[serde(default)]
+    pub accounts: Vec<Account>,
+    /// Single-login configs from before accounts existed; migrated into an admin
+    /// account on load and never written back.
+    #[serde(default, skip_serializing)]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub password_hash: Option<String>,
     /// Lowercased, trimmed, in priority order.
     #[serde(default)]
     pub keywords: Vec<String>,
     /// How many distinct streams (each its own channel) may run at once.
     pub max_viewers: u32,
+}
+
+impl Settings {
+    pub fn account(&self, id: &str) -> Option<&Account> {
+        self.accounts.iter().find(|a| a.id == id)
+    }
+
+    pub fn account_by_name(&self, username: &str) -> Option<&Account> {
+        let u = username.trim();
+        self.accounts
+            .iter()
+            .find(|a| a.username.eq_ignore_ascii_case(u))
+    }
+
+    pub fn first_admin(&self) -> Option<&Account> {
+        self.accounts.iter().find(|a| a.admin)
+    }
+
+    /// Make `id` the only priority account (or clear priority with `None`).
+    pub fn set_priority(&mut self, id: Option<&str>) {
+        for a in &mut self.accounts {
+            a.priority = Some(a.id.as_str()) == id;
+        }
+    }
+
+    /// Fold a pre-accounts config into an admin account.
+    fn migrate(&mut self) {
+        if self.accounts.is_empty()
+            && let (Some(u), Some(h)) = (self.username.take(), self.password_hash.take())
+        {
+            self.accounts.push(Account {
+                id: new_account_id(),
+                username: u,
+                password_hash: h,
+                admin: true,
+                priority: false,
+            });
+        }
+        self.username = None;
+        self.password_hash = None;
+    }
+}
+
+pub fn new_account_id() -> String {
+    crate::auth::random_token()[..12].to_string()
+}
+
+/// Usernames are case-insensitively unique and kept short and printable.
+pub fn validate_new_username(settings: &Settings, username: &str) -> Result<String, String> {
+    let u = username.trim();
+    if u.is_empty() {
+        return Err("Choose a username.".into());
+    }
+    if u.chars().count() > 40 || u.chars().any(char::is_control) {
+        return Err("Usernames can be at most 40 characters.".into());
+    }
+    if settings.account_by_name(u).is_some() {
+        return Err(format!("There's already an account called {u}."));
+    }
+    Ok(u.to_string())
 }
 
 /// Normalize a user-entered tvheadend address: add `http://` if missing, drop
@@ -105,8 +184,18 @@ pub fn config_path(data_dir: &Path) -> PathBuf {
 
 pub fn load(data_dir: &Path) -> Option<Settings> {
     let text = std::fs::read_to_string(config_path(data_dir)).ok()?;
-    match serde_json::from_str(&text) {
-        Ok(s) => Some(s),
+    match serde_json::from_str::<Settings>(&text) {
+        Ok(mut s) => {
+            let legacy = s.accounts.is_empty();
+            s.migrate();
+            if legacy && !s.accounts.is_empty() {
+                // Persist the migration so account ids stay stable across restarts.
+                if let Err(e) = save(data_dir, &s) {
+                    eprintln!("could not save migrated config: {e}");
+                }
+            }
+            Some(s)
+        }
         Err(e) => {
             eprintln!("config.json is unreadable ({e}); starting first-run setup");
             None

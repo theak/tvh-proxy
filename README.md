@@ -7,7 +7,7 @@ A sleek, password-protected live TV front end for [tvheadend](https://tvheadend.
 - **Plays on iPhone.** tvheadend's raw broadcast (MPEG-2 video, AC-3 audio) won't play in Safari, so the proxy re-encodes the channel you pick to H.264/AAC with ffmpeg and serves it as 1-second HLS segments. Typical start-up is ~3 seconds.
 - **Jump-to keywords.** e.g. `nfl, olympics`: when you open the app, the first keyword that matches something on air tunes straight to it; otherwise you land in the guide.
 - **Shared viewing.** `max viewers` caps how many different channels can play at once (usually your tuner count). Anyone who opens the app while every slot is busy joins the current channel, can't change it, and sees a banner asking them to close the other viewer. When that viewer closes, control passes to the next one.
-- **One login**, stored as an argon2 hash; sessions survive restarts; logins are rate-limited.
+- **Accounts.** The account made during setup is the admin, the only one who sees settings (a full page; opening it stops playback). The admin adds other accounts, resets their passwords, and can mark one account as **priority**: when it picks a channel it takes over the tuner from a non-priority viewer, who keeps watching that channel. Passwords are argon2 hashes; sessions survive restarts; logins are rate-limited.
 
 ## Run it
 
@@ -23,7 +23,7 @@ Open `http://<host>:9982`, enter the setup code, then:
 2. jump-to keywords (optional)
 3. max viewers (default 1)
 
-To change these later, use the gear icon in the viewer. To start over, delete `config.json` from the data volume and restart; a new setup code is printed.
+To change these later, the admin uses the gear icon (in the viewer or the guide). Lost the admin password? Run `docker exec tvh-proxy tvh-proxy reset-admin`, which prints a new one without touching other accounts, then restart the container. To start over completely, delete `config.json` from the data volume and restart; a new setup code is printed.
 
 tvheadend must let this host stream and read the EPG, either anonymously (an access entry for its IP with *streaming* and *web interface* rights) or with the tvheadend login you enter during setup.
 

@@ -42,9 +42,25 @@ pub fn setup_code() -> String {
     format!("{a}-{b}")
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+struct SessionEntry {
+    exp: u64,
+    /// Account id. Empty for sessions created before accounts existed; those belong
+    /// to the admin (resolved by the caller).
+    #[serde(default)]
+    account: String,
+}
+
+/// sessions.json holds `{digest: {exp, account}}`, or `{digest: exp}` from older versions.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StoredEntry {
+    Current(SessionEntry),
+    Legacy(u64),
+}
+
 pub struct Sessions {
-    /// digest → expiry (unix seconds)
-    map: HashMap<String, u64>,
+    map: HashMap<String, SessionEntry>,
     path: Option<PathBuf>,
 }
 
@@ -53,8 +69,20 @@ impl Sessions {
         let map = path
             .as_ref()
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|t| serde_json::from_str::<HashMap<String, u64>>(&t).ok())
-            .unwrap_or_default();
+            .and_then(|t| serde_json::from_str::<HashMap<String, StoredEntry>>(&t).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| {
+                let e = match v {
+                    StoredEntry::Current(e) => e,
+                    StoredEntry::Legacy(exp) => SessionEntry {
+                        exp,
+                        account: String::new(),
+                    },
+                };
+                (k, e)
+            })
+            .collect();
         let mut s = Sessions { map, path };
         s.prune();
         s
@@ -62,7 +90,7 @@ impl Sessions {
 
     fn prune(&mut self) {
         let now = now_unix();
-        self.map.retain(|_, exp| *exp > now);
+        self.map.retain(|_, e| e.exp > now);
     }
 
     fn persist(&self) {
@@ -74,20 +102,31 @@ impl Sessions {
         }
     }
 
-    /// Create a session and return the raw token for the cookie.
-    pub fn create(&mut self) -> String {
+    /// Create a session for `account` and return the raw token for the cookie.
+    pub fn create(&mut self, account: &str) -> String {
         self.prune();
         let token = random_token();
-        self.map
-            .insert(digest(&token), now_unix() + SESSION_TTL.as_secs());
+        self.map.insert(
+            digest(&token),
+            SessionEntry {
+                exp: now_unix() + SESSION_TTL.as_secs(),
+                account: account.to_string(),
+            },
+        );
         self.persist();
         token
     }
 
-    pub fn is_valid(&self, token: &str) -> bool {
+    /// The account id behind a live session (`""` for a pre-accounts session).
+    pub fn account_for(&self, token: &str) -> Option<String> {
         self.map
             .get(&digest(token))
-            .is_some_and(|exp| *exp > now_unix())
+            .filter(|e| e.exp > now_unix())
+            .map(|e| e.account.clone())
+    }
+
+    pub fn is_valid(&self, token: &str) -> bool {
+        self.account_for(token).is_some()
     }
 
     pub fn revoke(&mut self, token: &str) {
@@ -96,10 +135,14 @@ impl Sessions {
         }
     }
 
-    /// Sign everyone out (used after a password change).
-    pub fn revoke_all_except(&mut self, keep: Option<&str>) {
+    /// Sign an account out everywhere, optionally keeping one session (the caller's).
+    /// `legacy_too` also drops pre-accounts sessions (they belong to the admin).
+    pub fn revoke_account(&mut self, account: &str, keep: Option<&str>, legacy_too: bool) {
         let keep = keep.map(digest);
-        self.map.retain(|k, _| Some(k) == keep.as_ref());
+        self.map.retain(|k, e| {
+            let mine = e.account == account || (legacy_too && e.account.is_empty());
+            !mine || Some(k) == keep.as_ref()
+        });
         self.persist();
     }
 }

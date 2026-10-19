@@ -25,6 +25,7 @@
     lastProgressAt: 0,
     lastTime: 0,
     started: false,
+    me: null,              // { username, admin }
   };
 
   try {
@@ -743,11 +744,14 @@
     else showChrome();
   });
 
-  // ------------------------------------------------------------ settings
-  $('open-settings').addEventListener('click', async (e) => {
-    e.stopPropagation();
+  // ------------------------------------------------------------ settings (admin only)
+  // A full page. Opening it stops playback first (same as ✕), so nothing is left
+  // running on the tuner behind it; closing it returns to the guide.
+  async function openSettings() {
+    if (!S.me || !S.me.admin) return;
+    await stopWatching();
     const r = await api('/api/settings');
-    if (!r.ok) return;
+    if (!r.ok) { toast(r.data.error || "Couldn't load settings."); return; }
     const f = $('settings-form');
     f.reset();
     formError(f, '');
@@ -757,12 +761,18 @@
     f.keywords.value = r.data.keywords;
     f.max_viewers.value = r.data.max_viewers;
     f.max_viewers.max = r.data.max_viewers_limit;
+    $('add-account').reset();
+    formError($('add-account'), '');
+    renderAccounts(r.data.accounts || []);
+    setText('signed-in-as', 'Signed in as ' + r.data.username);
     $('settings').hidden = false;
+    $('settings').scrollTop = 0;
     showChrome(true);
-  });
+  }
   function closeSettings() { $('settings').hidden = true; showChrome(); }
+  $$('[data-open-settings]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); openSettings(); }));
   $('close-settings').addEventListener('click', closeSettings);
-  $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) closeSettings(); });
+
   $('settings-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = e.currentTarget;
@@ -779,16 +789,123 @@
     try {
       const r = await api('/api/settings', body);
       if (!r.ok) return formError(f, r.data.error || "Couldn't save.");
-      closeSettings();
+      f.current_password.value = f.new_password.value = f.confirm.value = f.tvh_password.value = '';
       toast('Saved');
       loadGuide();
     } finally { busy(f, false); }
   });
-  $('logout').addEventListener('click', async () => {
+
+  function renderAccounts(list) {
+    const box = $('accounts');
+    box.replaceChildren();
+    for (const a of list) {
+      const row = document.createElement('div');
+      row.className = 'acct';
+      row.dataset.id = a.id;
+      row.innerHTML =
+        '<div class="acct-row"><div class="acct-name"><span class="n"></span></div><div class="acct-actions">' +
+        '<button type="button" class="btn-glass small" data-act="priority"></button>' +
+        '<button type="button" class="btn-glass small" data-act="reset">Reset password</button>' +
+        (a.admin ? '' : '<button type="button" class="btn-glass small danger" data-act="delete">Delete</button>') +
+        '</div></div>' +
+        '<form class="acct-reset" novalidate hidden><div class="row2">' +
+        '<label class="field"><span class="label">New password</span><input name="password" type="password" autocomplete="new-password"></label>' +
+        '<label class="field"><span class="label">Confirm</span><input name="confirm" type="password" autocomplete="new-password"></label>' +
+        '</div><p class="form-error" role="alert" hidden></p><div class="sp-actions"><button type="submit" class="btn-primary small"><span>Set password</span></button></div></form>';
+      row.querySelector('.n').textContent = a.username;
+      const name = row.querySelector('.acct-name');
+      for (const [on, label, cls] of [[a.admin, 'Admin', ''], [a.priority, 'Priority', ' priority'], [a.me, 'You', '']]) {
+        if (!on) continue;
+        const tag = document.createElement('span');
+        tag.className = 'tag' + cls;
+        tag.textContent = label;
+        name.appendChild(tag);
+      }
+      row.querySelector('[data-act="priority"]').textContent = a.priority ? 'Remove priority' : 'Make priority';
+      row.querySelector('[data-act="priority"]').dataset.value = a.priority ? 'false' : 'true';
+      box.appendChild(row);
+    }
+  }
+
+  async function accountCall(method, path, body) {
+    const init = { method, credentials: 'same-origin', headers: {} };
+    if (body) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
+    const r = await fetch(path, init);
+    let data = {};
+    try { data = await r.json(); } catch (_) { /* empty */ }
+    if (r.status === 401) { stopEverything(); showPage('login'); }
+    return { ok: r.ok, data };
+  }
+
+  $('accounts').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const row = btn.closest('.acct');
+    const id = row.dataset.id;
+    const act = btn.dataset.act;
+    if (act === 'reset') {
+      const f = row.querySelector('.acct-reset');
+      f.hidden = !f.hidden;
+      if (!f.hidden) f.password.focus();
+      return;
+    }
+    if (act === 'delete' && !btn.classList.contains('armed')) {
+      // Second tap confirms (no browser dialogs).
+      btn.classList.add('armed');
+      btn.textContent = 'Tap again to delete';
+      setTimeout(() => { if (btn.isConnected) { btn.classList.remove('armed'); btn.textContent = 'Delete'; } }, 4000);
+      return;
+    }
+    btn.disabled = true;
+    const r = act === 'delete'
+      ? await accountCall('DELETE', '/api/accounts/' + encodeURIComponent(id))
+      : await accountCall('POST', '/api/accounts/' + encodeURIComponent(id), { priority: btn.dataset.value === 'true' });
+    btn.disabled = false;
+    if (!r.ok) { toast(r.data.error || "Couldn't update that account."); return; }
+    renderAccounts(r.data.accounts);
+    toast(act === 'delete' ? 'Account deleted' : 'Saved');
+  });
+
+  $('accounts').addEventListener('submit', async (e) => {
+    const f = e.target.closest('.acct-reset');
+    if (!f) return;
+    e.preventDefault();
+    const d = formData(f);
+    if (d.password !== d.confirm) return formError(f, "Passwords don't match.");
+    formError(f, '');
+    busy(f, true);
+    try {
+      const id = f.closest('.acct').dataset.id;
+      const r = await accountCall('POST', '/api/accounts/' + encodeURIComponent(id), { password: d.password, confirm: d.confirm });
+      if (!r.ok) return formError(f, r.data.error || "Couldn't set the password.");
+      renderAccounts(r.data.accounts);
+      toast('Password set — that account was signed out everywhere');
+    } finally { busy(f, false); }
+  });
+
+  $('add-account').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.currentTarget;
+    const d = formData(f);
+    if (d.password !== d.confirm) return formError(f, "Passwords don't match.");
+    formError(f, '');
+    busy(f, true);
+    try {
+      const r = await accountCall('POST', '/api/accounts', { username: d.username, password: d.password, confirm: d.confirm, priority: f.priority.checked });
+      if (!r.ok) return formError(f, r.data.error || "Couldn't add the account.");
+      f.reset();
+      renderAccounts(r.data.accounts);
+      toast('Account added');
+    } finally { busy(f, false); }
+  });
+
+  async function signOut() {
     await api('/api/leave', { client: S.client }).catch(() => {});
     await api('/api/logout', {}, { allow401: true }).catch(() => {});
     location.reload();
-  });
+  }
+  $('logout').addEventListener('click', signOut);
+  $('guide-logout').addEventListener('click', signOut);
 
   // ------------------------------------------------------------ lifecycle
   let timers = [];
@@ -808,6 +925,11 @@
   async function startTV(gesture) {
     showPage('tv');
     S.started = true;
+    try {
+      const st = await api('/api/status', undefined, { allow401: true });
+      S.me = st.data.authed ? { username: st.data.username, admin: !!st.data.admin } : null;
+    } catch (_) { S.me = null; }
+    document.body.classList.toggle('is-admin', !!(S.me && S.me.admin));
     tickClock();
     if (gesture) video.muted = false;
     const ok = await loadGuide();

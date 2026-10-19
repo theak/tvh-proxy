@@ -353,7 +353,7 @@ fn cookie_parsing_and_session_lifecycle() {
     );
     assert_eq!(auth::token_from_cookie_header("tvhp_session="), None);
     let mut s = auth::Sessions::load(None);
-    let t = s.create();
+    let t = s.create("acct1");
     assert!(s.is_valid(&t));
     assert!(!s.is_valid("nope"));
     s.revoke(&t);
@@ -443,7 +443,14 @@ async fn full_setup_login_and_guide_flow() {
 
     let (s, v, _) = send(&app, "GET", "/api/status", None, None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(v, json!({ "configured": false, "authed": false }));
+    assert_eq!(
+        (
+            v["configured"].clone(),
+            v["authed"].clone(),
+            v["admin"].clone()
+        ),
+        (json!(false), json!(false), json!(false))
+    );
 
     // Protected routes are closed before setup.
     let (s, _, _) = send(&app, "GET", "/api/guide", None, None).await;
@@ -553,7 +560,14 @@ async fn full_setup_login_and_guide_flow() {
     // Sessions survive a restart (new state over the same data dir).
     let app2 = build_router(build_state(data.clone(), temp_dir("work2"), enc(false)));
     let (_, v, _) = send(&app2, "GET", "/api/status", None, Some(&cookie2)).await;
-    assert_eq!(v, json!({ "configured": true, "authed": true }));
+    assert_eq!(
+        (
+            v["configured"].clone(),
+            v["authed"].clone(),
+            v["admin"].clone()
+        ),
+        (json!(true), json!(true), json!(true))
+    );
 }
 
 #[tokio::test]
@@ -716,4 +730,363 @@ fn stop_hands_control_on_and_stopped_followers_stay_parked() {
         Err(WatchError::Locked)
     );
     assert_eq!(hub.view("tab-a").role, Role::Follower);
+}
+
+// ---------------------------------------------------------------- accounts & priority
+
+#[test]
+fn legacy_single_login_config_becomes_an_admin_account() {
+    let dir = temp_dir("legacy");
+    std::fs::write(
+        dir.join("config.json"),
+        json!({ "tvh_url": "http://tv:9981", "username": "akshay", "password_hash": config::hash_password("hunter2hunter2"),
+                "keywords": ["nfl"], "max_viewers": 1 })
+        .to_string(),
+    )
+    .unwrap();
+    let s = config::load(&dir).unwrap();
+    assert_eq!(s.accounts.len(), 1);
+    let a = &s.accounts[0];
+    assert!(a.admin && !a.priority);
+    assert_eq!(a.username, "akshay");
+    assert!(config::verify_password("hunter2hunter2", &a.password_hash));
+    // The migration is saved, without the legacy top-level fields, and ids are stable.
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert!(saved.get("username").is_none() && saved.get("password_hash").is_none());
+    assert_eq!(config::load(&dir).unwrap().accounts[0].id, a.id);
+}
+
+#[test]
+fn legacy_sessions_still_load() {
+    let dir = temp_dir("legacy-sessions");
+    let mut s = auth::Sessions::load(Some(dir.join("sessions.json")));
+    let tok = s.create("x");
+    // Rewrite the file in the old `{digest: expiry}` shape.
+    let current: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("sessions.json")).unwrap()).unwrap();
+    let legacy: serde_json::Map<String, Value> = current
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v["exp"].clone()))
+        .collect();
+    std::fs::write(dir.join("sessions.json"), Value::Object(legacy).to_string()).unwrap();
+    let s2 = auth::Sessions::load(Some(dir.join("sessions.json")));
+    assert_eq!(
+        s2.account_for(&tok).as_deref(),
+        Some(""),
+        "legacy session = admin"
+    );
+}
+
+#[test]
+fn priority_takes_over_without_retuning_when_already_on_that_channel() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new(1);
+    hub.watch("kid", "aa", false, t0).unwrap();
+    hub.mark_priority("parent", true);
+    hub.heartbeat("parent", t0);
+    assert_eq!(hub.view("parent").role, Role::Follower);
+    // Same channel: control changes hands, no ffmpeg restart.
+    assert!(hub.watch("parent", "aa", false, t0).unwrap().is_empty());
+    assert_eq!(hub.view("parent").role, Role::Controller);
+    assert_eq!(
+        hub.view("kid").role,
+        Role::Follower,
+        "bumped viewer keeps watching"
+    );
+    assert_eq!(hub.watch("kid", "bb", false, t0), Err(WatchError::Locked));
+}
+
+#[test]
+fn priority_takes_over_with_exactly_one_retune() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new(1);
+    hub.watch("kid", "aa", false, t0).unwrap();
+    hub.mark_priority("parent", true);
+    // Not yet attached at all (e.g. browsing the guide after Stop): still takes over.
+    let actions = hub.watch("parent", "bb", false, t0).unwrap();
+    assert_eq!(
+        started(&actions),
+        vec![(1, 2, "bb".into())],
+        "one restart of the same stream"
+    );
+    assert_eq!(hub.view("kid").stream.unwrap().channel, "bb");
+    assert_eq!(hub.view("kid").role, Role::Follower);
+}
+
+#[test]
+fn non_priority_viewers_cannot_take_from_priority_and_priority_is_promoted_first() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new(1);
+    hub.mark_priority("parent", true);
+    hub.watch("parent", "aa", false, t0).unwrap();
+    hub.heartbeat("kid", t0);
+    assert_eq!(hub.watch("kid", "bb", false, t0), Err(WatchError::Locked));
+    // Hand-off order: with a kid (joined first) and the parent both following,
+    // the parent gets control when the controller leaves.
+    let mut hub = Hub::new(1);
+    hub.watch("host", "aa", false, t0).unwrap();
+    hub.heartbeat("kid", t0 + Duration::from_secs(1));
+    hub.mark_priority("parent", true);
+    hub.heartbeat("parent", t0 + Duration::from_secs(2));
+    // (parent didn't pick a channel, so no take-over yet)
+    assert_eq!(hub.view("parent").role, Role::Follower);
+    hub.leave("host", t0 + Duration::from_secs(3));
+    assert_eq!(hub.view("parent").role, Role::Controller);
+    assert_eq!(hub.view("kid").role, Role::Follower);
+}
+
+#[test]
+fn priority_prefers_a_free_slot_then_the_oldest_non_priority_stream() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new(2);
+    hub.watch("a", "aa", false, t0).unwrap();
+    hub.mark_priority("p", true);
+    // A free slot exists: no one is bumped.
+    assert_eq!(
+        started(&hub.watch("p", "pp", false, t0).unwrap()),
+        vec![(2, 1, "pp".into())]
+    );
+    assert_eq!(hub.view("a").role, Role::Controller);
+    let mut hub = Hub::new(2);
+    hub.watch("a", "aa", false, t0).unwrap();
+    hub.watch("b", "bb", false, t0 + Duration::from_secs(1))
+        .unwrap();
+    hub.mark_priority("p", true);
+    let actions = hub
+        .watch("p", "pp", false, t0 + Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(
+        started(&actions),
+        vec![(1, 2, "pp".into())],
+        "oldest stream (a's) is taken"
+    );
+    assert_eq!(hub.view("a").role, Role::Follower);
+    assert_eq!(hub.view("b").role, Role::Controller);
+}
+
+async fn json_req(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Value,
+    cookie: &str,
+) -> (StatusCode, Value) {
+    let (s, v, _) = send(app, method, uri, Some(body), Some(cookie)).await;
+    (s, v)
+}
+
+#[tokio::test]
+async fn admin_manages_accounts_and_users_see_no_settings() {
+    let data = temp_dir("accounts");
+    let state = build_state(data.clone(), temp_dir("work"), enc(false));
+    let code = state.setup_code.lock().unwrap().clone().unwrap();
+    let app = build_router(state);
+    let tvh_url = fake_tvh().await;
+    let (_, _, admin) = send(
+        &app,
+        "POST",
+        "/api/setup",
+        Some(setup_body(&code, &tvh_url)),
+        None,
+    )
+    .await;
+    let admin = admin.unwrap();
+    let (_, v, _) = send(&app, "GET", "/api/status", None, Some(&admin)).await;
+    assert_eq!(v["admin"], true);
+
+    // Create a priority user.
+    let (s, v) = json_req(&app, "POST", "/api/accounts", json!({ "username": "Kid", "password": "kidpass123", "confirm": "kidpass123", "priority": true }), &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let kid_id = v["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["username"] == "Kid")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Duplicate (case-insensitive) and weak passwords are refused.
+    let (s, _) = json_req(
+        &app,
+        "POST",
+        "/api/accounts",
+        json!({ "username": "kid", "password": "kidpass123", "confirm": "kidpass123" }),
+        &admin,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = json_req(
+        &app,
+        "POST",
+        "/api/accounts",
+        json!({ "username": "x", "password": "short", "confirm": "short" }),
+        &admin,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    // The user signs in, but gets no settings or account management.
+    let (s, _, kid) = send(
+        &app,
+        "POST",
+        "/api/login",
+        Some(json!({ "username": "kid", "password": "kidpass123" })),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let kid = kid.unwrap();
+    let (_, v, _) = send(&app, "GET", "/api/status", None, Some(&kid)).await;
+    assert_eq!(v["admin"], false);
+    assert_eq!(
+        send(&app, "GET", "/api/settings", None, Some(&kid)).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        json_req(
+            &app,
+            "POST",
+            "/api/accounts",
+            json!({ "username": "y", "password": "longenough1", "confirm": "longenough1" }),
+            &kid
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&app, "GET", "/api/guide", None, Some(&kid)).await.0,
+        StatusCode::OK
+    );
+
+    // Priority is exclusive: giving it to the admin clears it from the kid.
+    let admin_id = config::load(&data)
+        .unwrap()
+        .first_admin()
+        .unwrap()
+        .id
+        .clone();
+    let (_, v) = json_req(
+        &app,
+        "POST",
+        &format!("/api/accounts/{admin_id}"),
+        json!({ "priority": true }),
+        &admin,
+    )
+    .await;
+    let pri: Vec<&str> = v["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["priority"] == true)
+        .map(|a| a["username"].as_str().unwrap())
+        .collect();
+    assert_eq!(pri, vec!["akshay"]);
+
+    // Resetting the kid's password signs them out; the new one works.
+    let (s, _) = json_req(
+        &app,
+        "POST",
+        &format!("/api/accounts/{kid_id}"),
+        json!({ "password": "newkidpass1", "confirm": "newkidpass1" }),
+        &admin,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        send(&app, "GET", "/api/guide", None, Some(&kid)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, _, kid2) = send(
+        &app,
+        "POST",
+        "/api/login",
+        Some(json!({ "username": "Kid", "password": "newkidpass1" })),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // The admin can't be deleted; deleting the kid signs them out.
+    assert_eq!(
+        send(
+            &app,
+            "DELETE",
+            &format!("/api/accounts/{admin_id}"),
+            None,
+            Some(&admin)
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(
+            &app,
+            "DELETE",
+            &format!("/api/accounts/{kid_id}"),
+            None,
+            Some(&admin)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, "GET", "/api/guide", None, Some(&kid2.unwrap()))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, _, _) = send(
+        &app,
+        "POST",
+        "/api/login",
+        Some(json!({ "username": "Kid", "password": "newkidpass1" })),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn upgrading_keeps_the_existing_login_and_session() {
+    let data = temp_dir("upgrade");
+    std::fs::write(
+        data.join("config.json"),
+        json!({ "tvh_url": "http://127.0.0.1:9", "username": "akshay", "password_hash": config::hash_password("hunter2hunter2"), "max_viewers": 1 }).to_string(),
+    )
+    .unwrap();
+    // An old-format session file with one live session.
+    let token = auth::random_token();
+    let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(token.as_bytes()));
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+    std::fs::write(
+        data.join("sessions.json"),
+        json!({ digest: exp }).to_string(),
+    )
+    .unwrap();
+    let app = build_router(build_state(data, temp_dir("work"), enc(false)));
+    let cookie = format!("tvhp_session={token}");
+    let (_, v, _) = send(&app, "GET", "/api/status", None, Some(&cookie)).await;
+    assert_eq!(v["authed"], true);
+    assert_eq!(v["admin"], true);
+    assert_eq!(v["username"], "akshay");
+    let (s, _, _) = send(
+        &app,
+        "POST",
+        "/api/login",
+        Some(json!({ "username": "akshay", "password": "hunter2hunter2" })),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
 }

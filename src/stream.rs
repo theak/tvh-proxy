@@ -12,7 +12,7 @@
 //! carries out by starting/stopping ffmpeg.
 
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -103,6 +103,8 @@ pub struct Hub {
     pub max_streams: u32,
     streams: BTreeMap<u64, Slot>,
     clients: HashMap<String, ClientSlot>,
+    /// Tabs signed in as the priority account.
+    priority: HashSet<String>,
     next_id: u64,
 }
 
@@ -112,6 +114,7 @@ impl Hub {
             max_streams: max_streams.max(1),
             streams: BTreeMap::new(),
             clients: HashMap::new(),
+            priority: HashSet::new(),
             next_id: 1,
         }
     }
@@ -156,6 +159,43 @@ impl Hub {
     }
 
     /// `client` asks to watch `channel`. `retry` restarts the same channel after an error.
+    /// Mark whether `client` belongs to the priority account. Called on every
+    /// request, so changing an account's priority takes effect immediately.
+    pub fn mark_priority(&mut self, client: &str, priority: bool) {
+        if priority {
+            self.priority.insert(client.to_string());
+        } else {
+            self.priority.remove(client);
+        }
+    }
+
+    fn is_priority(&self, client: &str) -> bool {
+        self.priority.contains(client)
+    }
+
+    /// Point stream `id` at `channel`. Same channel = no retune (unless retrying a
+    /// failed start); otherwise one restart — the Runner kills the old ffmpeg before
+    /// starting the new one, so the tuner is never asked for two muxes at once.
+    fn steer(&mut self, id: u64, channel: &str, retry: bool) -> Vec<Action> {
+        let s = self.streams.get_mut(&id).expect("live stream");
+        let failed = matches!(s.status, Status::Error(_));
+        if s.channel == channel && !(retry && failed) {
+            return vec![];
+        }
+        s.channel = channel.to_string();
+        s.generation += 1;
+        s.status = Status::Starting;
+        vec![Action::Start {
+            id,
+            generation: s.generation,
+            channel: channel.to_string(),
+        }]
+    }
+
+    /// `client` asks to watch `channel`. `retry` restarts the same channel after an error.
+    ///
+    /// The priority viewer may take control of a stream run by a non-priority viewer;
+    /// the bumped viewer stays on as a follower (same picture, lock banner).
     pub fn watch(
         &mut self,
         client: &str,
@@ -167,29 +207,33 @@ impl Hub {
             c.parked = false;
         }
         self.heartbeat(client, now);
+        let priority = self.is_priority(client);
         let current = self.clients.get(client).and_then(|c| c.stream);
         if let Some(id) = current {
-            let s = self
-                .streams
-                .get_mut(&id)
-                .expect("client points at a live stream");
-            if s.owner != client {
-                return Err(WatchError::Locked);
+            let owner = self.streams[&id].owner.clone();
+            if owner != client {
+                if !priority || self.is_priority(&owner) {
+                    return Err(WatchError::Locked);
+                }
+                self.streams.get_mut(&id).unwrap().owner = client.to_string();
             }
-            let failed = matches!(s.status, Status::Error(_));
-            if s.channel == channel && !(retry && failed) {
-                return Ok(vec![]);
-            }
-            s.channel = channel.to_string();
-            s.generation += 1;
-            s.status = Status::Starting;
-            return Ok(vec![Action::Start {
-                id,
-                generation: s.generation,
-                channel: channel.to_string(),
-            }]);
+            return Ok(self.steer(id, channel, retry));
         }
         if self.at_capacity() {
+            if priority {
+                // Take over the oldest stream not already run by the priority viewer.
+                let target = self
+                    .streams
+                    .iter()
+                    .filter(|(_, s)| !self.is_priority(&s.owner))
+                    .min_by_key(|(_, s)| s.created)
+                    .map(|(id, _)| *id);
+                if let Some(id) = target {
+                    self.streams.get_mut(&id).unwrap().owner = client.to_string();
+                    self.clients.get_mut(client).unwrap().stream = Some(id);
+                    return Ok(self.steer(id, channel, retry));
+                }
+            }
             let oldest = self.oldest_stream();
             if let Some(c) = self.clients.get_mut(client) {
                 c.stream = oldest;
@@ -220,7 +264,6 @@ impl Hub {
         }])
     }
 
-    /// A tab closed (best-effort beacon from the browser).
     /// The Stop button: detach `client` and keep it parked on the guide. If nobody
     /// else is watching, the stream (and the tuner) is released immediately rather
     /// than after the idle grace period; otherwise the next viewer takes control.
@@ -236,7 +279,8 @@ impl Hub {
             .iter()
             .filter(|(_, c)| c.stream == Some(id))
             .collect();
-        watchers.sort_by_key(|(_, c)| c.joined);
+        // A waiting priority viewer is handed control first.
+        watchers.sort_by_key(|(name, c)| (!self.priority.contains(*name), c.joined));
         if watchers.is_empty() {
             self.streams.remove(&id);
             return vec![Action::Stop { id }];
@@ -259,6 +303,8 @@ impl Hub {
     pub fn tick(&mut self, now: Instant) -> Vec<Action> {
         self.clients
             .retain(|_, c| now.duration_since(c.last_seen) < CLIENT_TIMEOUT);
+        let clients = &self.clients;
+        self.priority.retain(|c| clients.contains_key(c));
         let mut actions = Vec::new();
         let ids: Vec<u64> = self.streams.keys().copied().collect();
         for id in ids {
@@ -267,7 +313,8 @@ impl Hub {
                 .iter()
                 .filter(|(_, c)| c.stream == Some(id))
                 .collect();
-            watchers.sort_by_key(|(_, c)| c.joined);
+            // A waiting priority viewer is handed control first.
+            watchers.sort_by_key(|(name, c)| (!self.priority.contains(*name), c.joined));
             let s = self.streams.get_mut(&id).unwrap();
             if watchers.is_empty() {
                 let since = *s.empty_since.get_or_insert(now);
