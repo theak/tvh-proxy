@@ -740,7 +740,7 @@
     if (k === 'ArrowUp') { e.preventDefault(); changeChannel(1); }
     else if (k === 'ArrowDown') { e.preventDefault(); changeChannel(-1); }
     else if (k === 'g' || k === 'G') { e.preventDefault(); openGuide(); }
-    else if (k === 's' || k === 'S') { e.preventDefault(); stopWatching(); }
+    else if (k === 's' || k === 'S' || k === 'Escape') { e.preventDefault(); stopWatching(); }
     else if (k === 'm' || k === 'M') { video.muted = !video.muted; $('sound').hidden = true; toast(video.muted ? 'Muted' : 'Sound on'); }
     else if (k === 'f' || k === 'F') toggleFullscreen();
     else showChrome();

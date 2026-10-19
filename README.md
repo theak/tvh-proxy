@@ -8,7 +8,7 @@ A sleek, password-protected live TV web frontend for [tvheadend](https://tvheade
  <img width="796" height="442" alt="tvh-guide" src="https://github.com/user-attachments/assets/e054afeb-5da1-455b-882a-90722bb61d5f" />
 </p>
 
-- **Full-screen viewer** with now/next info, ↑/↓ buttons or arrow keys to change channel, `G` for the guide, and ✕ (or `S`) to stop and free the tuner.
+- **Full-screen viewer** with now/next info, ↑/↓ buttons or arrow keys to change channel, `G` for the guide, and ✕ (or `S` / `Esc`) to stop and free the tuner.
 - **Guide** built from tvheadend's EPG, with keyboard and touch navigation.
 - **Plays on iPhone.** tvheadend's raw broadcast (MPEG-2 video, AC-3 audio) won't play in Safari, so the proxy re-encodes the channel you pick to H.264/AAC with ffmpeg and serves it as 1-second HLS segments. Typical start-up is ~3 seconds.
 - **Jump-to keywords.** e.g. `nfl, olympics`: when you open the app, the first keyword that matches something on air (as a whole word, in its title, episode, description or category) tunes straight to it; otherwise you land in the guide.
