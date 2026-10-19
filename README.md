@@ -42,6 +42,7 @@ On an iPhone, open the site in Safari → Share → **Add to Home Screen** to ge
 |---|---|---|
 | `PORT` | `9982` | HTTP port |
 | `DATA_DIR` | `/data` | settings + sessions |
+| `COOKIE_SECURE` | *(unset)* | `true` to always mark cookies Secure; only if every visit is over HTTPS |
 | `HWACCEL` | *(unset)* | `vaapi` to encode on an Intel iGPU (pass `/dev/dri` into the container) |
 | `VAAPI_DEVICE` | `/dev/dri/renderD128` | |
 | `VIDEO_HEIGHT` | `720` | output height (never upscales) |
