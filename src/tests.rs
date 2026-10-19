@@ -600,3 +600,32 @@ async fn json_only_posts() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
+
+#[test]
+fn digest_auth_matches_rfc_2617_example() {
+    let c = tvh::parse_digest_challenge(
+        r#"Digest realm="testrealm@host.com", qop="auth,auth-int", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", opaque="5ccc069c403ebaf9f0171e9517f40e41""#,
+    )
+    .unwrap();
+    assert_eq!(c["realm"], "testrealm@host.com");
+    let h = tvh::digest_authorization(
+        "Mufasa",
+        "Circle Of Life",
+        "GET",
+        "/dir/index.html",
+        &c,
+        "0a4f113b",
+    );
+    assert!(
+        h.contains(r#"response="6629fae49393a05397450978507c4ef1""#),
+        "{h}"
+    );
+    assert!(h.contains("qop=auth, nc=00000001"));
+    assert!(h.contains(r#"opaque="5ccc069c403ebaf9f0171e9517f40e41""#));
+    // tvheadend's unquoted-qop style also parses.
+    let c2 =
+        tvh::parse_digest_challenge(r#"Digest realm="tvheadend", qop=auth, nonce="abc=""#).unwrap();
+    assert_eq!(c2["qop"], "auth");
+    assert_eq!(c2["nonce"], "abc=");
+    assert!(tvh::parse_digest_challenge("Basic realm=x").is_none());
+}

@@ -188,22 +188,110 @@ pub struct Tvh {
     pub client: reqwest::Client,
 }
 
-impl Tvh {
-    fn get(&self, path: &str) -> reqwest::RequestBuilder {
-        let req = self
-            .client
-            .get(format!("{}/{}", self.base, path.trim_start_matches('/')));
-        if self.username.is_empty() {
-            req
+/// Parse a `WWW-Authenticate: Digest k="v", k2=v2` challenge into key/value pairs.
+pub fn parse_digest_challenge(header: &str) -> Option<std::collections::HashMap<String, String>> {
+    let rest = header.trim().strip_prefix("Digest")?.trim();
+    let mut out = std::collections::HashMap::new();
+    let mut s = rest;
+    while !s.is_empty() {
+        let (key, after) = s.split_once('=')?;
+        let key = key
+            .trim()
+            .trim_start_matches(',')
+            .trim()
+            .to_ascii_lowercase();
+        let after = after.trim_start();
+        let (value, remaining) = if let Some(q) = after.strip_prefix('"') {
+            let end = q.find('"')?;
+            (&q[..end], &q[end + 1..])
         } else {
-            req.basic_auth(&self.username, Some(&self.password))
+            let end = after.find(',').unwrap_or(after.len());
+            (after[..end].trim(), &after[end..])
+        };
+        out.insert(key, value.to_string());
+        s = remaining.trim_start().trim_start_matches(',').trim_start();
+    }
+    Some(out)
+}
+
+fn md5_hex(s: &str) -> String {
+    use md5::{Digest, Md5};
+    hex::encode(Md5::digest(s.as_bytes()))
+}
+
+/// RFC 2617 Digest `Authorization` header (qop=auth, or legacy no-qop). tvheadend
+/// uses Digest by default, so Basic credentials are rejected.
+pub fn digest_authorization(
+    user: &str,
+    pass: &str,
+    method: &str,
+    uri: &str,
+    challenge: &std::collections::HashMap<String, String>,
+    cnonce: &str,
+) -> String {
+    let get = |k: &str| challenge.get(k).map(String::as_str).unwrap_or("");
+    let (realm, nonce, opaque) = (get("realm"), get("nonce"), get("opaque"));
+    let ha1 = md5_hex(&format!("{user}:{realm}:{pass}"));
+    let ha2 = md5_hex(&format!("{method}:{uri}"));
+    let qop_auth = get("qop").split(',').any(|q| q.trim() == "auth");
+    let nc = "00000001";
+    let response = if qop_auth {
+        md5_hex(&format!("{ha1}:{nonce}:{nc}:{cnonce}:auth:{ha2}"))
+    } else {
+        md5_hex(&format!("{ha1}:{nonce}:{ha2}"))
+    };
+    let mut h = format!(
+        r#"Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{uri}", response="{response}""#
+    );
+    if qop_auth {
+        h.push_str(&format!(r#", qop=auth, nc={nc}, cnonce="{cnonce}""#));
+    }
+    if !opaque.is_empty() {
+        h.push_str(&format!(r#", opaque="{opaque}""#));
+    }
+    h
+}
+
+impl Tvh {
+    /// GET a tvheadend path, answering a Digest challenge when credentials are set
+    /// (falling back to Basic if that's what the server asks for).
+    async fn send(&self, path: &str) -> reqwest::Result<reqwest::Response> {
+        let path = path.trim_start_matches('/');
+        let url = format!("{}/{}", self.base, path);
+        let resp = self.client.get(&url).send().await?;
+        if resp.status() != reqwest::StatusCode::UNAUTHORIZED || self.username.is_empty() {
+            return Ok(resp);
         }
+        let challenge = resp
+            .headers()
+            .get(reqwest::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_digest_challenge);
+        let retry = self.client.get(&url);
+        let retry = match challenge {
+            Some(c) => {
+                // The `uri` must be the request-target exactly as sent: path + query.
+                let prefix = self
+                    .base
+                    .split_once("://")
+                    .map(|(_, r)| r)
+                    .unwrap_or(&self.base);
+                let base_path = prefix.find('/').map(|i| &prefix[i..]).unwrap_or("");
+                let uri = format!("{base_path}/{path}");
+                let cnonce = &crate::auth::random_token()[..16];
+                retry.header(
+                    reqwest::header::AUTHORIZATION,
+                    digest_authorization(&self.username, &self.password, "GET", &uri, &c, cnonce),
+                )
+            }
+            None => retry.basic_auth(&self.username, Some(&self.password)),
+        };
+        retry.send().await
     }
 
     async fn json(&self, path: &str) -> Result<Value, String> {
         let resp = self
-            .get(path)
-            .send()
+            .send(path)
             .await
             .map_err(|e| format!("Can't reach tvheadend: {e}"))?;
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED
@@ -235,7 +323,7 @@ impl Tvh {
     }
 
     pub async fn icon(&self, path: &str) -> Option<(String, Vec<u8>)> {
-        let resp = self.get(path).send().await.ok()?;
+        let resp = self.send(path).await.ok()?;
         if !resp.status().is_success() {
             return None;
         }
