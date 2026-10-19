@@ -120,6 +120,7 @@ pub fn build_router(state: Shared) -> Router {
         .route("/api/heartbeat", post(handlers::heartbeat))
         .route("/api/watch", post(handlers::watch))
         .route("/api/leave", post(handlers::leave))
+        .route("/api/stop", post(handlers::stop))
         .route("/hls/{id}/{generation}/{file}", get(handlers::hls))
         .route("/logo/{uuid}", get(handlers::logo))
         .layer(axum::middleware::map_response(security_headers))

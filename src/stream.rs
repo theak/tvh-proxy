@@ -49,6 +49,9 @@ struct ClientSlot {
     stream: Option<u64>,
     last_seen: Instant,
     joined: Instant,
+    /// Pressed Stop: stay on the guide (don't auto-follow a running stream) until
+    /// the tab picks a channel again.
+    parked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,9 +142,10 @@ impl Hub {
                 stream: None,
                 last_seen: now,
                 joined: now,
+                parked: false,
             });
         c.last_seen = now;
-        if c.stream.is_none() {
+        if c.stream.is_none() && !c.parked {
             c.stream = attach_to;
         }
         if let Some(id) = c.stream
@@ -159,6 +163,9 @@ impl Hub {
         retry: bool,
         now: Instant,
     ) -> Result<Vec<Action>, WatchError> {
+        if let Some(c) = self.clients.get_mut(client) {
+            c.parked = false;
+        }
         self.heartbeat(client, now);
         let current = self.clients.get(client).and_then(|c| c.stream);
         if let Some(id) = current {
@@ -214,6 +221,35 @@ impl Hub {
     }
 
     /// A tab closed (best-effort beacon from the browser).
+    /// The Stop button: detach `client` and keep it parked on the guide. If nobody
+    /// else is watching, the stream (and the tuner) is released immediately rather
+    /// than after the idle grace period; otherwise the next viewer takes control.
+    pub fn stop(&mut self, client: &str, now: Instant) -> Vec<Action> {
+        self.heartbeat(client, now);
+        let c = self.clients.get_mut(client).expect("heartbeat inserted it");
+        c.parked = true;
+        let Some(id) = c.stream.take() else {
+            return vec![];
+        };
+        let mut watchers: Vec<(&String, &ClientSlot)> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.stream == Some(id))
+            .collect();
+        watchers.sort_by_key(|(_, c)| c.joined);
+        if watchers.is_empty() {
+            self.streams.remove(&id);
+            return vec![Action::Stop { id }];
+        }
+        let next = watchers[0].0.clone();
+        if let Some(s) = self.streams.get_mut(&id)
+            && s.owner == client
+        {
+            s.owner = next;
+        }
+        vec![]
+    }
+
     pub fn leave(&mut self, client: &str, now: Instant) -> Vec<Action> {
         self.clients.remove(client);
         self.tick(now)

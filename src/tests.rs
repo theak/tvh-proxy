@@ -674,3 +674,46 @@ fn credentials_never_reach_the_logs() {
         "a https://***@h/1 and http://***@k/2"
     );
 }
+
+#[test]
+fn stop_releases_the_tuner_at_once_when_nobody_else_watches() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new(1);
+    hub.watch("tab-a", "aa", false, t0).unwrap();
+    assert_eq!(hub.stop("tab-a", t0), vec![Action::Stop { id: 1 }]);
+    assert_eq!(hub.view("tab-a").role, Role::Idle);
+    // Stopping again is harmless.
+    assert!(hub.stop("tab-a", t0).is_empty());
+    // Picking a channel afterwards works normally.
+    assert_eq!(
+        started(&hub.watch("tab-a", "bb", false, t0).unwrap()),
+        vec![(2, 1, "bb".into())]
+    );
+}
+
+#[test]
+fn stop_hands_control_on_and_stopped_followers_stay_parked() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new(1);
+    hub.watch("tab-a", "aa", false, t0).unwrap();
+    hub.heartbeat("tab-b", t0 + Duration::from_secs(1));
+    // The controller stops; the follower keeps watching and takes over.
+    assert!(hub.stop("tab-a", t0 + Duration::from_secs(2)).is_empty());
+    assert_eq!(hub.view("tab-b").role, Role::Controller);
+    // tab-a's next heartbeat must not drag it back into the shared stream.
+    hub.heartbeat("tab-a", t0 + Duration::from_secs(3));
+    assert_eq!(hub.view("tab-a").role, Role::Idle);
+    // A follower that stops is parked too, and the stream carries on.
+    hub.heartbeat("tab-c", t0 + Duration::from_secs(4));
+    assert_eq!(hub.view("tab-c").role, Role::Follower);
+    assert!(hub.stop("tab-c", t0 + Duration::from_secs(5)).is_empty());
+    hub.heartbeat("tab-c", t0 + Duration::from_secs(6));
+    assert_eq!(hub.view("tab-c").role, Role::Idle);
+    assert_eq!(hub.view("tab-b").role, Role::Controller);
+    // Picking a channel while the only slot is busy follows again (locked).
+    assert_eq!(
+        hub.watch("tab-a", "bb", false, t0 + Duration::from_secs(7)),
+        Err(WatchError::Locked)
+    );
+    assert_eq!(hub.view("tab-a").role, Role::Follower);
+}

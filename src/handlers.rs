@@ -695,6 +695,23 @@ pub async fn watch(
     }
 }
 
+/// The player's Stop button.
+pub async fn stop(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(b): Json<ClientBody>,
+) -> Response {
+    if let Err(r) = require_auth(&state, &headers) {
+        return r;
+    }
+    if !valid_client_id(&b.client) {
+        return err(StatusCode::BAD_REQUEST, "bad client id");
+    }
+    let actions = state.hub.lock().unwrap().stop(&b.client, Instant::now());
+    apply(&state, actions).await;
+    no_store(Json(view_json(&state, &b.client)).into_response())
+}
+
 pub async fn leave(
     State(state): State<Shared>,
     headers: HeaderMap,

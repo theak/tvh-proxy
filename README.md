@@ -2,7 +2,7 @@
 
 A sleek, password-protected live TV front end for [tvheadend](https://tvheadend.org) that you can safely put on the internet and watch from an iPhone.
 
-- **Full-screen viewer** with now/next info, ↑/↓ buttons or arrow keys to change channel, `G` for the guide.
+- **Full-screen viewer** with now/next info, ↑/↓ buttons or arrow keys to change channel, `G` for the guide, and ✕ (or `S`) to stop and free the tuner.
 - **Guide** built from tvheadend's EPG, with keyboard and touch navigation.
 - **Plays on iPhone.** tvheadend's raw broadcast (MPEG-2 video, AC-3 audio) won't play in Safari, so the proxy re-encodes the channel you pick to H.264/AAC with ffmpeg and serves it as 1-second HLS segments. Typical start-up is ~3 seconds.
 - **Jump-to keywords.** e.g. `nfl, olympics`: when you open the app, the first keyword that matches something on air tunes straight to it; otherwise you land in the guide.

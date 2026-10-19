@@ -112,12 +112,14 @@ details.more > :not(summary) + :not(summary) { margin-top: 12px; }
 .tv.chrome-hidden { cursor: none; }
 .ov-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .ov-right { display: flex; align-items: center; gap: 12px; flex: none; }
+#stop { width: 38px; height: 38px; margin-right: -2px; }
+#stop svg { width: 16px; height: 16px; }
 .live-pill { display: flex; align-items: center; gap: 7px; padding: 5px 10px 5px 9px; border-radius: 999px; background: var(--fg-10); border: 1px solid rgba(244,241,234,.14); font-family: 'Geist Mono', monospace; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; flex: none; }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: blink 1.6s ease-in-out infinite; }
 .cur-name { font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #cur-num { font-size: 15px; flex: none; }
 .clock { font-size: 15px; color: var(--fg-80); }
-@media (max-width: 420px) { .ov-top .clock { display: none; } }
+@media (max-width: 420px) { .ov-top .clock { display: none; } .ov-left { gap: 10px; } #cur-num { display: none; } }
 @media (max-width: 560px) { .g-head .clock { display: none; } }
 
 .now { flex: 1 1 440px; max-width: 820px; min-width: 0; display: flex; flex-direction: column; gap: 14px; }

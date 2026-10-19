@@ -431,6 +431,25 @@
     }, 700);
   }
 
+  // Stop: end playback, free the tuner (the server stops it at once if nobody else
+  // is watching) and land on the guide. Browsers don't let a page close its own
+  // tab or an iOS home-screen app, so the guide is where "exit" goes.
+  async function stopWatching() {
+    clearTimeout(S.commitTimer);
+    S.pendingIdx = null;
+    S.autoRetry = null;
+    S.playing = null;
+    detachPlayer();
+    hideLoader();
+    $('error-panel').hidden = true;
+    openGuide();
+    try {
+      const r = await api('/api/stop', { client: S.client });
+      if (r.ok) applyView(r.data);
+    } catch (_) { /* the next heartbeat will catch up */ }
+  }
+  $('stop').addEventListener('click', (e) => { e.stopPropagation(); stopWatching(); });
+
   $('ch-up').addEventListener('click', (e) => { e.stopPropagation(); changeChannel(1); });
   $('ch-down').addEventListener('click', (e) => { e.stopPropagation(); changeChannel(-1); });
   $('retry').addEventListener('click', () => {
@@ -480,7 +499,8 @@
   }
 
   function openGuide() {
-    if (S.guideOpen) return;
+    // Check what's on screen, not just the flag, so a stale flag can't block it.
+    if (S.guideOpen && $('tv').classList.contains('guide-open')) return;
     S.guideOpen = true;
     $('tv').classList.add('guide-open');
     $('guide').setAttribute('aria-hidden', 'false');
@@ -717,6 +737,7 @@
     if (k === 'ArrowUp') { e.preventDefault(); changeChannel(1); }
     else if (k === 'ArrowDown') { e.preventDefault(); changeChannel(-1); }
     else if (k === 'g' || k === 'G') { e.preventDefault(); openGuide(); }
+    else if (k === 's' || k === 'S') { e.preventDefault(); stopWatching(); }
     else if (k === 'm' || k === 'M') { video.muted = !video.muted; $('sound').hidden = true; toast(video.muted ? 'Muted' : 'Sound on'); }
     else if (k === 'f' || k === 'F') toggleFullscreen();
     else showChrome();
