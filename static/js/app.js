@@ -76,16 +76,6 @@
     btn.classList.toggle('busy', on);
   }
 
-  function wireSteppers(root) {
-    $$('[data-stepper]', root).forEach((st) => {
-      const input = st.querySelector('input');
-      $$('[data-step]', st).forEach((b) => b.addEventListener('click', () => {
-        const v = (parseInt(input.value, 10) || 1) + parseInt(b.dataset.step, 10);
-        input.value = Math.min(+input.max || 8, Math.max(+input.min || 1, v));
-      }));
-    });
-  }
-
   function formData(form) {
     const o = {};
     for (const [k, v] of new FormData(form).entries()) o[k] = typeof v === 'string' ? v : '';
@@ -101,7 +91,7 @@
     formError(f, '');
     busy(f, true);
     try {
-      const r = await api('/api/setup', { ...d, max_viewers: parseInt(d.max_viewers, 10) || 1 }, { allow401: true });
+      const r = await api('/api/setup', d, { allow401: true });
       if (!r.ok) return formError(f, r.data.error || 'Setup failed.');
       f.reset();
       startTV(true);
@@ -759,8 +749,6 @@
     f.tvh_username.value = r.data.tvh_username || '';
     f.tvh_password.placeholder = r.data.has_tvh_password ? 'unchanged' : '(none)';
     f.keywords.value = r.data.keywords;
-    f.max_viewers.value = r.data.max_viewers;
-    f.max_viewers.max = r.data.max_viewers_limit;
     $('add-account').reset();
     formError($('add-account'), '');
     renderAccounts(r.data.accounts || []);
@@ -779,7 +767,6 @@
     const d = formData(f);
     const body = {
       tvh_url: d.tvh_url, tvh_username: d.tvh_username, keywords: d.keywords,
-      max_viewers: parseInt(d.max_viewers, 10) || 1,
       current_password: d.current_password, new_password: d.new_password, confirm: d.confirm,
     };
     if (d.tvh_password) body.tvh_password = d.tvh_password;
@@ -963,7 +950,6 @@
   });
   window.addEventListener('resize', () => { if (S.guideOpen) renderGuide(true); });
 
-  wireSteppers(document);
 
   (async function boot() {
     try {

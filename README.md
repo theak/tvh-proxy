@@ -6,8 +6,8 @@ A sleek, password-protected live TV front end for [tvheadend](https://tvheadend.
 - **Guide** built from tvheadend's EPG, with keyboard and touch navigation.
 - **Plays on iPhone.** tvheadend's raw broadcast (MPEG-2 video, AC-3 audio) won't play in Safari, so the proxy re-encodes the channel you pick to H.264/AAC with ffmpeg and serves it as 1-second HLS segments. Typical start-up is ~3 seconds.
 - **Jump-to keywords.** e.g. `nfl, olympics`: when you open the app, the first keyword that matches something on air tunes straight to it; otherwise you land in the guide.
-- **Shared viewing.** `max viewers` caps how many different channels can play at once (usually your tuner count). Anyone who opens the app while every slot is busy joins the current channel, can't change it, and sees a banner asking them to close the other viewer. When that viewer closes, control passes to the next one.
-- **Accounts.** The account made during setup is the admin, the only one who sees settings (a full page; opening it stops playback). The admin adds other accounts, resets their passwords, and can mark one account as **priority**: when it picks a channel it takes over the tuner from a non-priority viewer, who keeps watching that channel. Passwords are argon2 hashes; sessions survive restarts; logins are rate-limited.
+- **One TV, one remote.** Built for a single tuner: everyone signed in watches the same channel. Whoever started watching holds the remote; everyone else watches along with a banner and can't change the channel. When the remote holder leaves or presses ✕, the remote passes on.
+- **Accounts.** The account made during setup is the admin, the only one who sees settings (a full page; opening it stops playback). The admin adds other accounts, resets their passwords, and can mark one account as **priority**: whenever it's watching, it holds the remote (just opening the app takes it, with no retune), and whoever had it keeps watching. Passwords are argon2 hashes; sessions survive restarts; logins are rate-limited.
 
 ## Run it
 
@@ -21,7 +21,6 @@ Open `http://<host>:9982`, enter the setup code, then:
 0. tvheadend's address (e.g. `http://192.168.0.149:9981`), plus its login if anonymous access is off
 1. your username + password: **write them down**, they're never shown again
 2. jump-to keywords (optional)
-3. max viewers (default 1)
 
 To change these later, the admin uses the gear icon (in the viewer or the guide). Lost the admin password? Run `docker exec tvh-proxy tvh-proxy reset-admin`, which prints a new one without touching other accounts, then restart the container. To start over completely, delete `config.json` from the data volume and restart; a new setup code is printed.
 

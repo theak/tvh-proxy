@@ -81,18 +81,6 @@
         </div>
       </section>
 
-      <section class="step">
-        <div class="step-num">3</div>
-        <div class="step-body">
-          <h2>Viewers at once</h2>
-          <div class="stepper" data-stepper>
-            <button type="button" class="round" data-step="-1" aria-label="Fewer">−</button>
-            <input name="max_viewers" type="number" min="1" max="8" value="1" inputmode="numeric">
-            <button type="button" class="round" data-step="1" aria-label="More">+</button>
-          </div>
-          <span class="hint">How many different channels can play at once — usually your number of tuners. Anyone else who opens the app joins the current channel and can't change it.</span>
-        </div>
-      </section>
 
       <p class="form-error" role="alert" hidden></p>
       <button class="btn-primary" type="submit"><span>Start watching</span></button>
@@ -268,15 +256,7 @@
           </div>
           <h3>Watching</h3>
           <label class="field"><span class="label">Jump-to keywords</span><input name="keywords" spellcheck="false" placeholder="nfl, olympics">
-            <span class="hint">On opening the app, the first keyword matching something on air tunes straight to it (it never bumps someone who's already watching).</span></label>
-          <div class="field"><span class="label">Viewers at once</span>
-            <div class="stepper" data-stepper>
-              <button type="button" class="round" data-step="-1" aria-label="Fewer">−</button>
-              <input name="max_viewers" type="number" min="1" max="8" inputmode="numeric">
-              <button type="button" class="round" data-step="1" aria-label="More">+</button>
-            </div>
-            <span class="hint">Different channels that can play at once — your number of tuners.</span>
-          </div>
+            <span class="hint">On opening the app, the first keyword matching something on air tunes straight to it (only when nothing is already playing).</span></label>
           <h3>Your password</h3>
           <label class="field"><span class="label">Current password</span><input name="current_password" type="password" autocomplete="current-password"></label>
           <div class="row2">

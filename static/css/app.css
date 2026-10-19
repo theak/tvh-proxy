@@ -75,9 +75,6 @@ details.more summary::before { content: '+'; font-family: 'Geist Mono', monospac
 details.more[open] summary::before { content: '−'; }
 details.more[open] summary { margin-bottom: 12px; }
 details.more > :not(summary) + :not(summary) { margin-top: 12px; }
-.stepper { display: flex; align-items: center; gap: 10px; }
-.stepper input { width: 72px; text-align: center; font-family: 'Geist Mono', monospace; -moz-appearance: textfield; }
-.stepper input::-webkit-inner-spin-button, .stepper input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .form-error { margin: 0; padding: 10px 14px; border-radius: 10px; background: rgba(255, 90, 54, .12); color: #FFB4A3; font-size: 14px; line-height: 1.4; }
 
 .btn-primary { height: 50px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; padding: 0 22px; border-radius: 999px; border: none; background: var(--fg); color: var(--bg); font-size: 15px; font-weight: 600; transition: background 160ms, transform 120ms, opacity 160ms; }

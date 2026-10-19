@@ -11,21 +11,20 @@ healthy (as few retunes as possible) beats everything else.
   sessions carry over.
 - **Settings are global and admin-only.** Non-admins see no settings (no gear); they only get Sign out.
 - **Settings is a full-screen page**, not a modal. Opening it stops playback (same as ✕).
-- **Priority.** At most one account (any account, including the admin) is priority.
-  - It takes over **only when the priority user picks a channel** — never just by opening the app;
-    jump-to keywords don't pre-empt.
-  - The bumped viewer keeps watching as a **follower** of the priority user's channel, with the existing
-    lock banner. No new UI.
-  - When control is handed on (controller leaves), a waiting priority viewer is promoted first.
+- **One TV, one remote** (revised after first deploy, optimizing for simplicity and reliability).
+  One tuner, so at most one stream; everyone signed in watches it. One tab holds the remote; others
+  watch with the lock banner. "Viewers at once" is gone.
+- **Priority.** At most one account (any account, including the admin) is priority. Whenever one of
+  its tabs is watching it holds the remote — simply opening the app takes it, with **no retune**
+  (the channel only changes when the priority user changes it). The previous holder keeps watching
+  as a follower. Jump-to keywords only tune when nothing is playing.
+- **Remote hand-off:** when the holder leaves or presses ✕, priority first, then longest-waiting.
 - **No external-access restriction.** All accounts may sign in from anywhere.
 
-## Tuner-friendly take-over
-- Taking over a stream that's already on the requested channel: change of control only, **no retune**.
-- Otherwise exactly one retune of the existing stream: the old ffmpeg (and its tvheadend subscription)
-  is killed and awaited *before* the new one starts, so the tuner is never asked for two muxes at once.
-- With several slots busy, the priority viewer takes the oldest non-priority stream; a free slot is used
-  first if there is one.
-- Existing debounce (0.7 s) and one auto-retry still apply.
+## Tuner-friendly
+- Taking the remote never retunes. A channel change is exactly one restart: the old ffmpeg (and its
+  tvheadend subscription) is killed and awaited before the new one starts.
+- Existing debounce (0.7 s), single auto-retry, and the 20 s idle grace still apply.
 
 ## Also
 - `tvh-proxy reset-admin` (run in the container) sets a new random admin password and prints it — the

@@ -1,18 +1,22 @@
-//! Who is watching what.
+//! One TV, one remote.
 //!
-//! A *stream* is one ffmpeg process turning one tvheadend channel into a 1-second-
-//! segment HLS playlist. `max_viewers` caps how many streams (i.e. distinct channels,
-//! i.e. tuners) may run at once. The browser that started a stream *controls* it;
-//! anyone who arrives while every slot is taken *follows* the oldest stream — they
-//! see the same picture but can't change the channel. When the controller goes away
-//! the longest-waiting follower is promoted, and a stream nobody is watching is
-//! stopped after a short grace period (so a page reload doesn't retune the tuner).
+//! There is one tuner, so there is at most one *stream*: one ffmpeg process turning
+//! the current channel into a 1-second-segment HLS playlist that every signed-in tab
+//! watches. One tab holds the *remote* and can change the channel; everyone else
+//! watches with a lock banner.
 //!
-//! `Hub` is the pure bookkeeping (unit-tested); it returns `Action`s that `Runner`
-//! carries out by starting/stopping ffmpeg.
+//! Who holds the remote:
+//! - The priority account, whenever one of its tabs is watching — it gets the remote
+//!   the moment it shows up (no retune: the channel only changes when it changes it).
+//! - Otherwise whoever started watching first; when they leave or press Stop the
+//!   remote passes on (priority first, then longest-waiting).
+//!
+//! A stream nobody watches is stopped after a short grace period, so a page reload
+//! doesn't retune the tuner. `Hub` is the pure bookkeeping (unit-tested); it returns
+//! `Action`s that `Runner` carries out by starting/stopping ffmpeg.
 
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -33,24 +37,25 @@ pub enum Status {
 }
 
 #[derive(Clone, Debug)]
-pub struct Slot {
-    pub channel: String,
-    /// Bumped every time the stream is (re)started; part of the playlist URL so a
+struct Stream {
+    /// New for each stream (each time playback starts from nothing).
+    id: u64,
+    channel: String,
+    /// Bumped every time the stream is (re)tuned; part of the playlist URL so a
     /// browser never mixes segments from two different tunings.
-    pub generation: u64,
-    pub owner: String,
-    pub status: Status,
-    created: Instant,
+    generation: u64,
+    /// The tab holding the remote.
+    owner: String,
+    status: Status,
     empty_since: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
-struct ClientSlot {
-    stream: Option<u64>,
+struct Tab {
     last_seen: Instant,
     joined: Instant,
-    /// Pressed Stop: stay on the guide (don't auto-follow a running stream) until
-    /// the tab picks a channel again.
+    /// Pressed Stop: stay on the guide (don't auto-join the stream) until the tab
+    /// picks a channel again.
     parked: bool,
 }
 
@@ -70,9 +75,11 @@ pub enum Action {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    /// Not watching anything yet; free to pick a channel.
+    /// Not watching (nothing playing, or pressed Stop).
     Idle,
+    /// Holds the remote.
     Controller,
+    /// Watching; someone else holds the remote.
     Follower,
 }
 
@@ -89,76 +96,33 @@ pub struct StreamView {
 pub struct View {
     pub role: Role,
     pub stream: Option<StreamView>,
-    /// Other tabs on the same stream.
+    /// Other tabs watching.
     pub others: usize,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum WatchError {
-    /// The caller is (now) following someone else's stream.
+    /// Someone else holds the remote.
     Locked,
 }
 
+#[derive(Default)]
 pub struct Hub {
-    pub max_streams: u32,
-    streams: BTreeMap<u64, Slot>,
-    clients: HashMap<String, ClientSlot>,
+    stream: Option<Stream>,
+    tabs: HashMap<String, Tab>,
     /// Tabs signed in as the priority account.
     priority: HashSet<String>,
     next_id: u64,
 }
 
 impl Hub {
-    pub fn new(max_streams: u32) -> Self {
+    pub fn new() -> Self {
         Hub {
-            max_streams: max_streams.max(1),
-            streams: BTreeMap::new(),
-            clients: HashMap::new(),
-            priority: HashSet::new(),
             next_id: 1,
+            ..Default::default()
         }
     }
 
-    fn oldest_stream(&self) -> Option<u64> {
-        self.streams
-            .iter()
-            .min_by_key(|(_, s)| s.created)
-            .map(|(id, _)| *id)
-    }
-
-    fn at_capacity(&self) -> bool {
-        self.streams.len() as u32 >= self.max_streams
-    }
-
-    /// Record that `client` is alive. A newcomer arriving while every slot is busy is
-    /// attached as a follower straight away, so it shows the shared picture.
-    pub fn heartbeat(&mut self, client: &str, now: Instant) {
-        let attach_to = if self.at_capacity() {
-            self.oldest_stream()
-        } else {
-            None
-        };
-        let c = self
-            .clients
-            .entry(client.to_string())
-            .or_insert(ClientSlot {
-                stream: None,
-                last_seen: now,
-                joined: now,
-                parked: false,
-            });
-        c.last_seen = now;
-        if c.stream.is_none() && !c.parked {
-            c.stream = attach_to;
-        }
-        if let Some(id) = c.stream
-            && let Some(s) = self.streams.get_mut(&id)
-        {
-            s.empty_since = None;
-        }
-    }
-
-    /// `client` asks to watch `channel`. `retry` restarts the same channel after an error.
     /// Mark whether `client` belongs to the priority account. Called on every
     /// request, so changing an account's priority takes effect immediately.
     pub fn mark_priority(&mut self, client: &str, priority: bool) {
@@ -169,33 +133,49 @@ impl Hub {
         }
     }
 
-    fn is_priority(&self, client: &str) -> bool {
-        self.priority.contains(client)
-    }
-
-    /// Point stream `id` at `channel`. Same channel = no retune (unless retrying a
-    /// failed start); otherwise one restart — the Runner kills the old ffmpeg before
-    /// starting the new one, so the tuner is never asked for two muxes at once.
-    fn steer(&mut self, id: u64, channel: &str, retry: bool) -> Vec<Action> {
-        let s = self.streams.get_mut(&id).expect("live stream");
-        let failed = matches!(s.status, Status::Error(_));
-        if s.channel == channel && !(retry && failed) {
+    /// Tabs watching the stream, in remote-passing order: priority first, then
+    /// longest-waiting.
+    fn watchers(&self) -> Vec<String> {
+        if self.stream.is_none() {
             return vec![];
         }
-        s.channel = channel.to_string();
-        s.generation += 1;
-        s.status = Status::Starting;
-        vec![Action::Start {
-            id,
-            generation: s.generation,
-            channel: channel.to_string(),
-        }]
+        let mut w: Vec<(&String, &Tab)> = self.tabs.iter().filter(|(_, t)| !t.parked).collect();
+        w.sort_by_key(|(name, t)| (!self.priority.contains(*name), t.joined));
+        w.into_iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    /// Re-decide who holds the remote: a watching priority tab always does;
+    /// otherwise the current holder keeps it while watching, else it passes on.
+    fn settle_remote(&mut self, now: Instant) {
+        let watchers = self.watchers();
+        let Some(s) = self.stream.as_mut() else {
+            return;
+        };
+        if watchers.is_empty() {
+            s.empty_since.get_or_insert(now);
+            return;
+        }
+        s.empty_since = None;
+        let owner_watching = watchers.contains(&s.owner);
+        let owner_priority = self.priority.contains(&s.owner);
+        let first = &watchers[0];
+        if !owner_watching || (self.priority.contains(first) && !owner_priority) {
+            s.owner = first.clone();
+        }
+    }
+
+    /// Record that `client` is alive (every few seconds from each tab).
+    pub fn heartbeat(&mut self, client: &str, now: Instant) {
+        let tab = self.tabs.entry(client.to_string()).or_insert(Tab {
+            last_seen: now,
+            joined: now,
+            parked: false,
+        });
+        tab.last_seen = now;
+        self.settle_remote(now);
     }
 
     /// `client` asks to watch `channel`. `retry` restarts the same channel after an error.
-    ///
-    /// The priority viewer may take control of a stream run by a non-priority viewer;
-    /// the bumped viewer stays on as a follower (same picture, lock banner).
     pub fn watch(
         &mut self,
         client: &str,
@@ -203,137 +183,90 @@ impl Hub {
         retry: bool,
         now: Instant,
     ) -> Result<Vec<Action>, WatchError> {
-        if let Some(c) = self.clients.get_mut(client) {
-            c.parked = false;
+        if let Some(t) = self.tabs.get_mut(client) {
+            t.parked = false;
         }
         self.heartbeat(client, now);
-        let priority = self.is_priority(client);
-        let current = self.clients.get(client).and_then(|c| c.stream);
-        if let Some(id) = current {
-            let owner = self.streams[&id].owner.clone();
-            if owner != client {
-                if !priority || self.is_priority(&owner) {
-                    return Err(WatchError::Locked);
-                }
-                self.streams.get_mut(&id).unwrap().owner = client.to_string();
-            }
-            return Ok(self.steer(id, channel, retry));
-        }
-        if self.at_capacity() {
-            if priority {
-                // Take over the oldest stream not already run by the priority viewer.
-                let target = self
-                    .streams
-                    .iter()
-                    .filter(|(_, s)| !self.is_priority(&s.owner))
-                    .min_by_key(|(_, s)| s.created)
-                    .map(|(id, _)| *id);
-                if let Some(id) = target {
-                    self.streams.get_mut(&id).unwrap().owner = client.to_string();
-                    self.clients.get_mut(client).unwrap().stream = Some(id);
-                    return Ok(self.steer(id, channel, retry));
-                }
-            }
-            let oldest = self.oldest_stream();
-            if let Some(c) = self.clients.get_mut(client) {
-                c.stream = oldest;
-            }
-            return Err(WatchError::Locked);
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        self.streams.insert(
-            id,
-            Slot {
+        let Some(s) = self.stream.as_mut() else {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.stream = Some(Stream {
+                id,
                 channel: channel.to_string(),
                 generation: 1,
                 owner: client.to_string(),
                 status: Status::Starting,
-                created: now,
                 empty_since: None,
-            },
-        );
-        self.clients
-            .get_mut(client)
-            .expect("heartbeat inserted it")
-            .stream = Some(id);
+            });
+            return Ok(vec![Action::Start {
+                id,
+                generation: 1,
+                channel: channel.to_string(),
+            }]);
+        };
+        if s.owner != client {
+            return Err(WatchError::Locked);
+        }
+        // Same channel = nothing to do (unless retrying a failed start). Otherwise one
+        // restart; the Runner kills the old ffmpeg before starting the new one, so the
+        // tuner is never asked for two channels at once.
+        let failed = matches!(s.status, Status::Error(_));
+        if s.channel == channel && !(retry && failed) {
+            return Ok(vec![]);
+        }
+        s.channel = channel.to_string();
+        s.generation += 1;
+        s.status = Status::Starting;
         Ok(vec![Action::Start {
-            id,
-            generation: 1,
+            id: s.id,
+            generation: s.generation,
             channel: channel.to_string(),
         }])
     }
 
-    /// The Stop button: detach `client` and keep it parked on the guide. If nobody
+    /// The Stop button: this tab stops watching and stays on the guide. If nobody
     /// else is watching, the stream (and the tuner) is released immediately rather
-    /// than after the idle grace period; otherwise the next viewer takes control.
+    /// than after the idle grace period; otherwise the remote passes on.
     pub fn stop(&mut self, client: &str, now: Instant) -> Vec<Action> {
         self.heartbeat(client, now);
-        let c = self.clients.get_mut(client).expect("heartbeat inserted it");
-        c.parked = true;
-        let Some(id) = c.stream.take() else {
-            return vec![];
-        };
-        let mut watchers: Vec<(&String, &ClientSlot)> = self
-            .clients
-            .iter()
-            .filter(|(_, c)| c.stream == Some(id))
-            .collect();
-        // A waiting priority viewer is handed control first.
-        watchers.sort_by_key(|(name, c)| (!self.priority.contains(*name), c.joined));
-        if watchers.is_empty() {
-            self.streams.remove(&id);
+        self.tabs
+            .get_mut(client)
+            .expect("heartbeat inserted it")
+            .parked = true;
+        if self.stream.is_some() && self.watchers().is_empty() {
+            let id = self.stream.take().unwrap().id;
             return vec![Action::Stop { id }];
         }
-        let next = watchers[0].0.clone();
-        if let Some(s) = self.streams.get_mut(&id)
-            && s.owner == client
+        self.settle_remote(now);
+        vec![]
+    }
+
+    /// A tab closed (best-effort beacon from the browser).
+    pub fn leave(&mut self, client: &str, now: Instant) -> Vec<Action> {
+        self.tabs.remove(client);
+        self.priority.remove(client);
+        self.tick(now)
+    }
+
+    /// Housekeeping: drop silent tabs, pass the remote on, stop an unwatched stream.
+    pub fn tick(&mut self, now: Instant) -> Vec<Action> {
+        self.tabs
+            .retain(|_, t| now.duration_since(t.last_seen) < CLIENT_TIMEOUT);
+        let tabs = &self.tabs;
+        self.priority.retain(|c| tabs.contains_key(c));
+        self.settle_remote(now);
+        if let Some(since) = self.stream.as_ref().and_then(|s| s.empty_since)
+            && now.duration_since(since) >= IDLE_GRACE
         {
-            s.owner = next;
+            let id = self.stream.take().unwrap().id;
+            return vec![Action::Stop { id }];
         }
         vec![]
     }
 
-    pub fn leave(&mut self, client: &str, now: Instant) -> Vec<Action> {
-        self.clients.remove(client);
-        self.tick(now)
-    }
-
-    /// Housekeeping: drop silent clients, hand control to followers, stop idle streams.
-    pub fn tick(&mut self, now: Instant) -> Vec<Action> {
-        self.clients
-            .retain(|_, c| now.duration_since(c.last_seen) < CLIENT_TIMEOUT);
-        let clients = &self.clients;
-        self.priority.retain(|c| clients.contains_key(c));
-        let mut actions = Vec::new();
-        let ids: Vec<u64> = self.streams.keys().copied().collect();
-        for id in ids {
-            let mut watchers: Vec<(&String, &ClientSlot)> = self
-                .clients
-                .iter()
-                .filter(|(_, c)| c.stream == Some(id))
-                .collect();
-            // A waiting priority viewer is handed control first.
-            watchers.sort_by_key(|(name, c)| (!self.priority.contains(*name), c.joined));
-            let s = self.streams.get_mut(&id).unwrap();
-            if watchers.is_empty() {
-                let since = *s.empty_since.get_or_insert(now);
-                if now.duration_since(since) >= IDLE_GRACE {
-                    self.streams.remove(&id);
-                    actions.push(Action::Stop { id });
-                }
-                continue;
-            }
-            s.empty_since = None;
-            if !watchers.iter().any(|(name, _)| **name == s.owner) {
-                s.owner = watchers[0].0.clone();
-            }
-        }
-        actions
-    }
-
     pub fn set_status(&mut self, id: u64, generation: u64, status: Status) {
-        if let Some(s) = self.streams.get_mut(&id)
+        if let Some(s) = self.stream.as_mut()
+            && s.id == id
             && s.generation == generation
         {
             s.status = status;
@@ -341,25 +274,20 @@ impl Hub {
     }
 
     pub fn is_current(&self, id: u64, generation: u64) -> bool {
-        self.streams
-            .get(&id)
-            .is_some_and(|s| s.generation == generation)
+        self.stream
+            .as_ref()
+            .is_some_and(|s| s.id == id && s.generation == generation)
     }
 
     pub fn view(&self, client: &str) -> View {
-        let stream_id = self.clients.get(client).and_then(|c| c.stream);
-        let Some((id, s)) = stream_id.and_then(|id| self.streams.get(&id).map(|s| (id, s))) else {
+        let watching = self.tabs.get(client).is_some_and(|t| !t.parked);
+        let Some(s) = self.stream.as_ref().filter(|_| watching) else {
             return View {
                 role: Role::Idle,
                 stream: None,
                 others: 0,
             };
         };
-        let others = self
-            .clients
-            .iter()
-            .filter(|(k, c)| c.stream == Some(id) && k.as_str() != client)
-            .count();
         View {
             role: if s.owner == client {
                 Role::Controller
@@ -367,19 +295,28 @@ impl Hub {
                 Role::Follower
             },
             stream: Some(StreamView {
-                id,
+                id: s.id,
                 generation: s.generation,
                 channel: s.channel.clone(),
                 status: s.status.clone(),
-                playlist: format!("/hls/{id}/{}/live.m3u8", s.generation),
+                playlist: format!("/hls/{}/{}/live.m3u8", s.id, s.generation),
             }),
-            others,
+            others: self.watchers().len().saturating_sub(1),
         }
     }
 
-    /// Change the cap. Running streams beyond a lowered cap keep going until they end.
-    pub fn set_max(&mut self, max: u32) {
-        self.max_streams = max.max(1);
+    fn view_status(&self, id: u64, generation: u64) -> Option<Status> {
+        self.stream
+            .as_ref()
+            .filter(|s| s.id == id && s.generation == generation)
+            .map(|s| s.status.clone())
+    }
+
+    pub fn view_status_pub(&self, id: u64) -> Option<Status> {
+        self.stream
+            .as_ref()
+            .filter(|s| s.id == id)
+            .map(|s| s.status.clone())
     }
 }
 
@@ -699,18 +636,5 @@ impl Runner {
             self.kill(id).await;
         }
         let _ = tokio::fs::remove_dir_all(&self.root).await;
-    }
-}
-
-impl Hub {
-    fn view_status(&self, id: u64, generation: u64) -> Option<Status> {
-        self.streams
-            .get(&id)
-            .filter(|s| s.generation == generation)
-            .map(|s| s.status.clone())
-    }
-
-    pub fn view_status_pub(&self, id: u64) -> Option<Status> {
-        self.streams.get(&id).map(|s| s.status.clone())
     }
 }

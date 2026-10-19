@@ -80,7 +80,6 @@ pub fn build_state(data_dir: PathBuf, work_dir: PathBuf, enc: stream::EncoderCon
     } else {
         None
     };
-    let max = settings.as_ref().map(|s| s.max_viewers).unwrap_or(1);
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(20))
@@ -92,7 +91,7 @@ pub fn build_state(data_dir: PathBuf, work_dir: PathBuf, enc: stream::EncoderCon
         settings: RwLock::new(settings),
         setup_code: Mutex::new(setup_code),
         limiter: Mutex::new(auth::LoginLimiter::new()),
-        hub: Arc::new(Mutex::new(stream::Hub::new(max))),
+        hub: Arc::new(Mutex::new(stream::Hub::new())),
         runner: Arc::new(stream::Runner::new(enc, &work_dir).expect("work dir must be writable")),
         guide: tokio::sync::Mutex::new(None),
         logos: Mutex::new(HashMap::new()),

@@ -39,14 +39,11 @@ fn parses_keywords_in_order_lowercased_and_deduped() {
 }
 
 #[test]
-fn validates_credentials_and_viewers() {
+fn validates_credentials() {
     assert!(config::validate_credentials("me", "longenough", "longenough").is_ok());
     assert!(config::validate_credentials("", "longenough", "longenough").is_err());
     assert!(config::validate_credentials("me", "short", "short").is_err());
     assert!(config::validate_credentials("me", "longenough", "different1").is_err());
-    assert!(config::validate_max_viewers(0).is_err());
-    assert_eq!(config::validate_max_viewers(1), Ok(1));
-    assert!(config::validate_max_viewers(config::MAX_VIEWERS_LIMIT + 1).is_err());
 }
 
 #[test]
@@ -160,131 +157,6 @@ fn started(actions: &[Action]) -> Vec<(u64, u64, String)> {
             _ => None,
         })
         .collect()
-}
-
-#[test]
-fn first_viewer_controls_and_second_follows_with_one_slot() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    let a = hub.watch("tab-a", "aa", false, t0).unwrap();
-    assert_eq!(started(&a), vec![(1, 1, "aa".into())]);
-    assert_eq!(hub.view("tab-a").role, Role::Controller);
-
-    // A second device signs in: it is attached to the running stream immediately.
-    hub.heartbeat("tab-b", t0);
-    let vb = hub.view("tab-b");
-    assert_eq!(vb.role, Role::Follower);
-    assert_eq!(vb.stream.as_ref().unwrap().channel, "aa");
-    assert_eq!(hub.view("tab-a").others, 1);
-
-    // ...and can't change the channel.
-    assert_eq!(hub.watch("tab-b", "bb", false, t0), Err(WatchError::Locked));
-
-    // The controller changes channel; the follower's view follows (new generation).
-    let a2 = hub.watch("tab-a", "bb", false, t0).unwrap();
-    assert_eq!(started(&a2), vec![(1, 2, "bb".into())]);
-    let vb = hub.view("tab-b");
-    assert_eq!(vb.stream.as_ref().unwrap().channel, "bb");
-    assert_eq!(vb.stream.as_ref().unwrap().playlist, "/hls/1/2/live.m3u8");
-}
-
-#[test]
-fn rewatching_the_same_channel_is_a_no_op_unless_retrying_after_error() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.watch("tab-a", "aa", false, t0).unwrap();
-    assert!(hub.watch("tab-a", "aa", false, t0).unwrap().is_empty());
-    assert!(
-        hub.watch("tab-a", "aa", true, t0).unwrap().is_empty(),
-        "retry only restarts a failed stream"
-    );
-    hub.set_status(1, 1, Status::Error("tuner".into()));
-    assert_eq!(
-        started(&hub.watch("tab-a", "aa", true, t0).unwrap()),
-        vec![(1, 2, "aa".into())]
-    );
-    assert_eq!(hub.view("tab-a").stream.unwrap().status, Status::Starting);
-}
-
-#[test]
-fn control_passes_to_the_longest_waiting_follower() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.watch("tab-a", "aa", false, t0).unwrap();
-    hub.heartbeat("tab-b", t0 + Duration::from_secs(1));
-    hub.heartbeat("tab-c", t0 + Duration::from_secs(2));
-    // tab-a closes its page.
-    assert!(
-        hub.leave("tab-a", t0 + Duration::from_secs(3)).is_empty(),
-        "stream keeps running"
-    );
-    assert_eq!(hub.view("tab-b").role, Role::Controller);
-    assert_eq!(hub.view("tab-c").role, Role::Follower);
-    assert!(
-        !hub.watch("tab-b", "bb", false, t0 + Duration::from_secs(4))
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[test]
-fn silent_tabs_time_out_and_idle_streams_stop_after_grace() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.watch("tab-a", "aa", false, t0).unwrap();
-    // No heartbeats: the tab is dropped, then the stream lingers for the grace period.
-    let t1 = t0 + CLIENT_TIMEOUT + Duration::from_secs(1);
-    assert!(hub.tick(t1).is_empty());
-    assert_eq!(hub.view("tab-a").role, Role::Idle);
-    // A reload within the grace period re-attaches without retuning.
-    hub.heartbeat("tab-a2", t1 + Duration::from_secs(5));
-    assert_eq!(hub.view("tab-a2").role, Role::Follower);
-    // ...and with nobody else there, it is promoted on the next tick.
-    hub.tick(t1 + Duration::from_secs(6));
-    assert_eq!(hub.view("tab-a2").role, Role::Controller);
-    // Everyone leaves; after the grace period the stream is stopped.
-    hub.leave("tab-a2", t1 + Duration::from_secs(7));
-    assert!(hub.tick(t1 + Duration::from_secs(8)).is_empty());
-    assert_eq!(
-        hub.tick(t1 + Duration::from_secs(8) + IDLE_GRACE),
-        vec![Action::Stop { id: 1 }]
-    );
-    // The slot is free again.
-    hub.heartbeat("tab-z", t1 + Duration::from_secs(60));
-    assert_eq!(hub.view("tab-z").role, Role::Idle);
-}
-
-#[test]
-fn more_slots_allow_independent_channels() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(2);
-    hub.watch("tab-a", "aa", false, t0).unwrap();
-    hub.heartbeat("tab-b", t0);
-    assert_eq!(
-        hub.view("tab-b").role,
-        Role::Idle,
-        "a free slot means you pick your own channel"
-    );
-    assert_eq!(
-        started(&hub.watch("tab-b", "bb", false, t0).unwrap()),
-        vec![(2, 1, "bb".into())]
-    );
-    // Now full: a third tab follows the oldest stream.
-    hub.heartbeat("tab-c", t0);
-    assert_eq!(hub.view("tab-c").stream.unwrap().channel, "aa");
-    assert_eq!(hub.watch("tab-c", "cc", false, t0), Err(WatchError::Locked));
-}
-
-#[test]
-fn status_updates_ignore_stale_generations() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.watch("tab-a", "aa", false, t0).unwrap();
-    hub.watch("tab-a", "bb", false, t0).unwrap(); // generation 2
-    hub.set_status(1, 1, Status::Error("old ffmpeg died".into()));
-    assert_eq!(hub.view("tab-a").stream.unwrap().status, Status::Starting);
-    hub.set_status(1, 2, Status::Live);
-    assert_eq!(hub.view("tab-a").stream.unwrap().status, Status::Live);
 }
 
 // ---------------------------------------------------------------- ffmpeg & hls files
@@ -689,49 +561,6 @@ fn credentials_never_reach_the_logs() {
     );
 }
 
-#[test]
-fn stop_releases_the_tuner_at_once_when_nobody_else_watches() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.watch("tab-a", "aa", false, t0).unwrap();
-    assert_eq!(hub.stop("tab-a", t0), vec![Action::Stop { id: 1 }]);
-    assert_eq!(hub.view("tab-a").role, Role::Idle);
-    // Stopping again is harmless.
-    assert!(hub.stop("tab-a", t0).is_empty());
-    // Picking a channel afterwards works normally.
-    assert_eq!(
-        started(&hub.watch("tab-a", "bb", false, t0).unwrap()),
-        vec![(2, 1, "bb".into())]
-    );
-}
-
-#[test]
-fn stop_hands_control_on_and_stopped_followers_stay_parked() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.watch("tab-a", "aa", false, t0).unwrap();
-    hub.heartbeat("tab-b", t0 + Duration::from_secs(1));
-    // The controller stops; the follower keeps watching and takes over.
-    assert!(hub.stop("tab-a", t0 + Duration::from_secs(2)).is_empty());
-    assert_eq!(hub.view("tab-b").role, Role::Controller);
-    // tab-a's next heartbeat must not drag it back into the shared stream.
-    hub.heartbeat("tab-a", t0 + Duration::from_secs(3));
-    assert_eq!(hub.view("tab-a").role, Role::Idle);
-    // A follower that stops is parked too, and the stream carries on.
-    hub.heartbeat("tab-c", t0 + Duration::from_secs(4));
-    assert_eq!(hub.view("tab-c").role, Role::Follower);
-    assert!(hub.stop("tab-c", t0 + Duration::from_secs(5)).is_empty());
-    hub.heartbeat("tab-c", t0 + Duration::from_secs(6));
-    assert_eq!(hub.view("tab-c").role, Role::Idle);
-    assert_eq!(hub.view("tab-b").role, Role::Controller);
-    // Picking a channel while the only slot is busy follows again (locked).
-    assert_eq!(
-        hub.watch("tab-a", "bb", false, t0 + Duration::from_secs(7)),
-        Err(WatchError::Locked)
-    );
-    assert_eq!(hub.view("tab-a").role, Role::Follower);
-}
-
 // ---------------------------------------------------------------- accounts & priority
 
 #[test]
@@ -778,93 +607,6 @@ fn legacy_sessions_still_load() {
         Some(""),
         "legacy session = admin"
     );
-}
-
-#[test]
-fn priority_takes_over_without_retuning_when_already_on_that_channel() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.watch("kid", "aa", false, t0).unwrap();
-    hub.mark_priority("parent", true);
-    hub.heartbeat("parent", t0);
-    assert_eq!(hub.view("parent").role, Role::Follower);
-    // Same channel: control changes hands, no ffmpeg restart.
-    assert!(hub.watch("parent", "aa", false, t0).unwrap().is_empty());
-    assert_eq!(hub.view("parent").role, Role::Controller);
-    assert_eq!(
-        hub.view("kid").role,
-        Role::Follower,
-        "bumped viewer keeps watching"
-    );
-    assert_eq!(hub.watch("kid", "bb", false, t0), Err(WatchError::Locked));
-}
-
-#[test]
-fn priority_takes_over_with_exactly_one_retune() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.watch("kid", "aa", false, t0).unwrap();
-    hub.mark_priority("parent", true);
-    // Not yet attached at all (e.g. browsing the guide after Stop): still takes over.
-    let actions = hub.watch("parent", "bb", false, t0).unwrap();
-    assert_eq!(
-        started(&actions),
-        vec![(1, 2, "bb".into())],
-        "one restart of the same stream"
-    );
-    assert_eq!(hub.view("kid").stream.unwrap().channel, "bb");
-    assert_eq!(hub.view("kid").role, Role::Follower);
-}
-
-#[test]
-fn non_priority_viewers_cannot_take_from_priority_and_priority_is_promoted_first() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(1);
-    hub.mark_priority("parent", true);
-    hub.watch("parent", "aa", false, t0).unwrap();
-    hub.heartbeat("kid", t0);
-    assert_eq!(hub.watch("kid", "bb", false, t0), Err(WatchError::Locked));
-    // Hand-off order: with a kid (joined first) and the parent both following,
-    // the parent gets control when the controller leaves.
-    let mut hub = Hub::new(1);
-    hub.watch("host", "aa", false, t0).unwrap();
-    hub.heartbeat("kid", t0 + Duration::from_secs(1));
-    hub.mark_priority("parent", true);
-    hub.heartbeat("parent", t0 + Duration::from_secs(2));
-    // (parent didn't pick a channel, so no take-over yet)
-    assert_eq!(hub.view("parent").role, Role::Follower);
-    hub.leave("host", t0 + Duration::from_secs(3));
-    assert_eq!(hub.view("parent").role, Role::Controller);
-    assert_eq!(hub.view("kid").role, Role::Follower);
-}
-
-#[test]
-fn priority_prefers_a_free_slot_then_the_oldest_non_priority_stream() {
-    let t0 = Instant::now();
-    let mut hub = Hub::new(2);
-    hub.watch("a", "aa", false, t0).unwrap();
-    hub.mark_priority("p", true);
-    // A free slot exists: no one is bumped.
-    assert_eq!(
-        started(&hub.watch("p", "pp", false, t0).unwrap()),
-        vec![(2, 1, "pp".into())]
-    );
-    assert_eq!(hub.view("a").role, Role::Controller);
-    let mut hub = Hub::new(2);
-    hub.watch("a", "aa", false, t0).unwrap();
-    hub.watch("b", "bb", false, t0 + Duration::from_secs(1))
-        .unwrap();
-    hub.mark_priority("p", true);
-    let actions = hub
-        .watch("p", "pp", false, t0 + Duration::from_secs(2))
-        .unwrap();
-    assert_eq!(
-        started(&actions),
-        vec![(1, 2, "pp".into())],
-        "oldest stream (a's) is taken"
-    );
-    assert_eq!(hub.view("a").role, Role::Follower);
-    assert_eq!(hub.view("b").role, Role::Controller);
 }
 
 async fn json_req(
@@ -1089,4 +831,167 @@ async fn upgrading_keeps_the_existing_login_and_session() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+}
+
+// ---------------------------------------------------------------- one TV, one remote
+
+#[test]
+fn first_viewer_holds_the_remote_and_others_watch_along() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new();
+    assert_eq!(
+        started(&hub.watch("a", "aa", false, t0).unwrap()),
+        vec![(1, 1, "aa".into())]
+    );
+    assert_eq!(hub.view("a").role, Role::Controller);
+    // A second tab joins the same picture straight away and can't change channel.
+    hub.heartbeat("b", t0);
+    let vb = hub.view("b");
+    assert_eq!(vb.role, Role::Follower);
+    assert_eq!(vb.stream.unwrap().channel, "aa");
+    assert_eq!(hub.view("a").others, 1);
+    assert_eq!(hub.watch("b", "bb", false, t0), Err(WatchError::Locked));
+    // The remote holder changes channel; everyone follows (new generation).
+    assert_eq!(
+        started(&hub.watch("a", "bb", false, t0).unwrap()),
+        vec![(1, 2, "bb".into())]
+    );
+    assert_eq!(hub.view("b").stream.unwrap().playlist, "/hls/1/2/live.m3u8");
+}
+
+#[test]
+fn same_channel_is_a_no_op_unless_retrying_after_an_error() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new();
+    hub.watch("a", "aa", false, t0).unwrap();
+    assert!(hub.watch("a", "aa", false, t0).unwrap().is_empty());
+    assert!(
+        hub.watch("a", "aa", true, t0).unwrap().is_empty(),
+        "retry only restarts a failed stream"
+    );
+    hub.set_status(1, 1, Status::Error("tuner".into()));
+    assert_eq!(
+        started(&hub.watch("a", "aa", true, t0).unwrap()),
+        vec![(1, 2, "aa".into())]
+    );
+    assert_eq!(hub.view("a").stream.unwrap().status, Status::Starting);
+    // Stale ffmpeg reports are ignored.
+    hub.set_status(1, 1, Status::Error("old".into()));
+    assert_eq!(hub.view("a").stream.unwrap().status, Status::Starting);
+}
+
+#[test]
+fn the_remote_passes_to_the_longest_waiting_viewer() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new();
+    hub.watch("a", "aa", false, t0).unwrap();
+    hub.heartbeat("b", t0 + Duration::from_secs(1));
+    hub.heartbeat("c", t0 + Duration::from_secs(2));
+    assert!(
+        hub.leave("a", t0 + Duration::from_secs(3)).is_empty(),
+        "stream keeps running"
+    );
+    assert_eq!(hub.view("b").role, Role::Controller);
+    assert_eq!(hub.view("c").role, Role::Follower);
+}
+
+#[test]
+fn priority_gets_the_remote_on_arrival_without_a_retune() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new();
+    hub.watch("admin", "aa", false, t0).unwrap();
+    hub.mark_priority("parent", true);
+    hub.heartbeat("parent", t0);
+    // Just showing up hands over the remote; nothing restarts.
+    assert_eq!(hub.view("parent").role, Role::Controller);
+    assert_eq!(
+        hub.view("admin").role,
+        Role::Follower,
+        "the previous holder keeps watching"
+    );
+    assert_eq!(hub.view("parent").stream.unwrap().generation, 1);
+    assert_eq!(hub.watch("admin", "bb", false, t0), Err(WatchError::Locked));
+    // A channel change by the priority viewer is a single retune.
+    assert_eq!(
+        started(&hub.watch("parent", "bb", false, t0).unwrap()),
+        vec![(1, 2, "bb".into())]
+    );
+    // When the priority viewer leaves, the remote goes back.
+    hub.leave("parent", t0 + Duration::from_secs(1));
+    assert_eq!(hub.view("admin").role, Role::Controller);
+}
+
+#[test]
+fn priority_viewer_who_pressed_stop_does_not_hold_the_remote() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new();
+    hub.watch("admin", "aa", false, t0).unwrap();
+    hub.mark_priority("parent", true);
+    hub.heartbeat("parent", t0);
+    assert!(
+        hub.stop("parent", t0).is_empty(),
+        "admin still watching, stream continues"
+    );
+    assert_eq!(hub.view("parent").role, Role::Idle);
+    assert_eq!(hub.view("admin").role, Role::Controller);
+    // Heartbeats keep them parked on the guide...
+    hub.heartbeat("parent", t0 + Duration::from_secs(1));
+    assert_eq!(hub.view("parent").role, Role::Idle);
+    // ...until they pick a channel, which takes the remote and tunes once.
+    assert_eq!(
+        started(&hub.watch("parent", "bb", false, t0).unwrap()),
+        vec![(1, 2, "bb".into())]
+    );
+    assert_eq!(hub.view("admin").role, Role::Follower);
+}
+
+#[test]
+fn stop_frees_the_tuner_at_once_when_nobody_else_watches() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new();
+    hub.watch("a", "aa", false, t0).unwrap();
+    assert_eq!(hub.stop("a", t0), vec![Action::Stop { id: 1 }]);
+    assert_eq!(hub.view("a").role, Role::Idle);
+    assert!(hub.stop("a", t0).is_empty(), "stopping twice is harmless");
+    // Picking a channel afterwards starts a fresh stream.
+    assert_eq!(
+        started(&hub.watch("a", "bb", false, t0).unwrap()),
+        vec![(2, 1, "bb".into())]
+    );
+}
+
+#[test]
+fn a_parked_tab_does_not_get_pulled_back_into_the_stream() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new();
+    hub.watch("a", "aa", false, t0).unwrap();
+    hub.heartbeat("b", t0);
+    hub.stop("b", t0);
+    hub.heartbeat("b", t0 + Duration::from_secs(1));
+    assert_eq!(hub.view("b").role, Role::Idle);
+    assert_eq!(hub.view("a").others, 0);
+    // Picking a channel rejoins (locked, since "a" holds the remote).
+    assert_eq!(hub.watch("b", "bb", false, t0), Err(WatchError::Locked));
+    assert_eq!(hub.view("b").role, Role::Follower);
+}
+
+#[test]
+fn silent_tabs_time_out_and_an_unwatched_stream_stops_after_grace() {
+    let t0 = Instant::now();
+    let mut hub = Hub::new();
+    hub.watch("a", "aa", false, t0).unwrap();
+    let t1 = t0 + CLIENT_TIMEOUT + Duration::from_secs(1);
+    assert!(hub.tick(t1).is_empty(), "grace period");
+    // A reload within the grace period takes over without retuning.
+    hub.heartbeat("a2", t1 + Duration::from_secs(5));
+    assert_eq!(hub.view("a2").role, Role::Controller);
+    assert_eq!(hub.view("a2").stream.unwrap().generation, 1);
+    hub.leave("a2", t1 + Duration::from_secs(6));
+    assert!(hub.tick(t1 + Duration::from_secs(7)).is_empty());
+    assert_eq!(
+        hub.tick(t1 + Duration::from_secs(7) + IDLE_GRACE),
+        vec![Action::Stop { id: 1 }]
+    );
+    hub.heartbeat("z", t1 + Duration::from_secs(60));
+    assert_eq!(hub.view("z").role, Role::Idle);
 }

@@ -279,7 +279,6 @@ pub struct SetupBody {
     pub confirm: String,
     #[serde(default)]
     pub keywords: String,
-    pub max_viewers: u32,
 }
 
 pub async fn setup(
@@ -319,10 +318,6 @@ pub async fn setup(
     if let Err(e) = config::validate_credentials(&b.username, &b.password, &b.confirm) {
         return err(StatusCode::BAD_REQUEST, e);
     }
-    let max_viewers = match config::validate_max_viewers(b.max_viewers) {
-        Ok(n) => n,
-        Err(e) => return err(StatusCode::BAD_REQUEST, e),
-    };
     let probe = tvh::Tvh {
         base: tvh_url.clone(),
         username: b.tvh_username.trim().into(),
@@ -348,7 +343,6 @@ pub async fn setup(
         username: None,
         password_hash: None,
         keywords: config::parse_keywords(&b.keywords),
-        max_viewers,
     };
     if let Err(e) = config::save(&state.data_dir, &settings) {
         return err(
@@ -358,7 +352,6 @@ pub async fn setup(
     }
     *state.settings.write().unwrap() = Some(settings);
     *state.setup_code.lock().unwrap() = None;
-    state.hub.lock().unwrap().set_max(max_viewers);
     let token = state.sessions.lock().unwrap().create(&admin_id);
     with_cookie(
         Json(json!({ "ok": true })).into_response(),
@@ -446,8 +439,6 @@ pub async fn get_settings(State(state): State<Shared>, headers: HeaderMap) -> Re
             "has_tvh_password": !s.tvh_password.is_empty(),
             "username": me.username,
             "keywords": s.keywords.join(", "),
-            "max_viewers": s.max_viewers,
-            "max_viewers_limit": config::MAX_VIEWERS_LIMIT,
             "accounts": accounts_json(&s, &me),
         }))
         .into_response(),
@@ -471,7 +462,6 @@ pub struct SettingsBody {
     pub tvh_password: Option<String>,
     #[serde(default)]
     pub keywords: String,
-    pub max_viewers: u32,
     #[serde(default)]
     pub current_password: String,
     #[serde(default)]
@@ -501,10 +491,6 @@ pub async fn save_settings(
             "Enter tvheadend's address, like http://192.168.0.149:9981",
         );
     };
-    let max_viewers = match config::validate_max_viewers(b.max_viewers) {
-        Ok(n) => n,
-        Err(e) => return err(StatusCode::BAD_REQUEST, e),
-    };
     let password_change = !b.new_password.is_empty();
     if password_change {
         let (current, hash) = (b.current_password.clone(), me.password_hash.clone());
@@ -531,7 +517,6 @@ pub async fn save_settings(
         next.tvh_password = p;
     }
     next.keywords = config::parse_keywords(&b.keywords);
-    next.max_viewers = max_viewers;
     if tvh_changed {
         let probe = tvh::Tvh {
             base: next.tvh_url.clone(),
@@ -548,7 +533,6 @@ pub async fn save_settings(
     if let Err(r) = save_settings_to_disk(&state, next) {
         return r;
     }
-    state.hub.lock().unwrap().set_max(max_viewers);
     if password_change {
         // Sign this account out everywhere else; this device stays signed in.
         state.sessions.lock().unwrap().revoke_account(

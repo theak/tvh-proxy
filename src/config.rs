@@ -7,8 +7,6 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const MAX_VIEWERS_LIMIT: u32 = 8;
-
 /// A sign-in. The account created by first-run setup is the admin; only admins see
 /// settings. At most one account is the priority viewer (see `stream::Hub`).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -42,8 +40,6 @@ pub struct Settings {
     /// Lowercased, trimmed, in priority order.
     #[serde(default)]
     pub keywords: Vec<String>,
-    /// How many distinct streams (each its own channel) may run at once.
-    pub max_viewers: u32,
 }
 
 impl Settings {
@@ -148,16 +144,6 @@ pub fn validate_credentials(username: &str, password: &str, confirm: &str) -> Re
         return Err("Passwords don't match.".into());
     }
     Ok(())
-}
-
-pub fn validate_max_viewers(n: u32) -> Result<u32, String> {
-    if (1..=MAX_VIEWERS_LIMIT).contains(&n) {
-        Ok(n)
-    } else {
-        Err(format!(
-            "Max viewers must be between 1 and {MAX_VIEWERS_LIMIT}."
-        ))
-    }
 }
 
 pub fn hash_password(password: &str) -> String {
