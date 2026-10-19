@@ -418,6 +418,29 @@ pub fn ffmpeg_args(enc: &EncoderConfig, input_url: &str, out_dir: &Path) -> Vec<
     a
 }
 
+/// Mask `user:password@` in any URL inside a log line. ffmpeg echoes the input URL
+/// on errors, and that URL carries the tvheadend login.
+pub fn redact_credentials(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| c.is_whitespace() || c == '/' || c == '"' || c == '\'')
+            .unwrap_or(tail.len());
+        match tail[..end].rfind('@') {
+            Some(at) => {
+                out.push_str("***@");
+                rest = &tail[at + 1..];
+            }
+            None => rest = tail,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Valid file names under `/hls/{id}/{gen}/` — anything else is rejected (no traversal).
 pub fn is_hls_file(name: &str) -> bool {
     name == "live.m3u8"
@@ -531,6 +554,7 @@ impl Runner {
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(err).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    let line = redact_credentials(&line);
                     eprintln!("ffmpeg[{id}/{generation}]: {line}");
                     let mut t = tail.lock().unwrap();
                     t.push_back(line);

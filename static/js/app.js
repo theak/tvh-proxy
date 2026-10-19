@@ -301,6 +301,7 @@
   }
 
   video.addEventListener('playing', () => {
+    S.autoRetry = null;
     $('tv').classList.add('playing');
     hideLoader();
     $('error-panel').hidden = true;
@@ -352,7 +353,23 @@
     if (sv.status.state === 'error') {
       if (S.playing && S.playing.generation === sv.generation) detachPlayer();
       S.playing = { id: sv.id, generation: sv.generation, channel: sv.channel };
-      showError(sv.status.message);
+      // The USB tuner often stalls briefly after a retune; one quiet retry usually
+      // fixes it. Only the controller retries, once per failed tuning.
+      const auto = S.autoRetry;
+      if (v.role === 'controller' && !(auto && auto.channel === sv.channel && auto.used)) {
+        if (!auto || auto.generation !== sv.generation) {
+          S.autoRetry = { channel: sv.channel, generation: sv.generation, used: false };
+          showLoader(sv.channel, 'Tuner hiccup — retrying');
+          setLoaderStage('Tuner hiccup — retrying', 0.5);
+          setTimeout(() => {
+            if (!S.autoRetry || S.autoRetry.generation !== sv.generation || S.current !== sv.channel) return;
+            S.autoRetry.used = true;
+            watchChannel(sv.channel, { retry: true });
+          }, 6000);
+        }
+      } else {
+        showError(sv.status.message);
+      }
     } else if (!S.playing || S.playing.id !== sv.id || S.playing.generation !== sv.generation) {
       showLoader(sv.channel, sv.status.state === 'live' ? 'Buffering' : 'Tuning');
       attach(sv);

@@ -656,3 +656,21 @@ async fn live_tvheadend_login() {
         assert!(wrong.channels().await.is_err() || std::env::var("TVH_TEST_ANON_OK").is_ok());
     }
 }
+
+#[test]
+fn credentials_never_reach_the_logs() {
+    let line = "Error opening input file http://admin:s3cr@t@192.168.0.149:9981/stream/channel/abc?profile=pass.";
+    let r = stream::redact_credentials(line);
+    assert!(!r.contains("s3cr"), "{r}");
+    assert!(!r.contains("admin"), "{r}");
+    assert!(r.contains("http://***@192.168.0.149:9981/stream/channel/abc"));
+    assert_eq!(
+        stream::redact_credentials("http://192.168.0.149:9981/x"),
+        "http://192.168.0.149:9981/x"
+    );
+    assert_eq!(stream::redact_credentials("no urls here"), "no urls here");
+    assert_eq!(
+        stream::redact_credentials("a https://u:p@h/1 and http://v:q@k/2"),
+        "a https://***@h/1 and http://***@k/2"
+    );
+}
