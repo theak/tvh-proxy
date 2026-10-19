@@ -40,6 +40,9 @@ pub struct Settings {
     /// Lowercased, trimmed, in priority order.
     #[serde(default)]
     pub keywords: Vec<String>,
+    /// Optional URL POSTed a JSON event on every failed sign-in (e.g. a Home Assistant webhook).
+    #[serde(default)]
+    pub alert_webhook: String,
 }
 
 impl Settings {
@@ -119,6 +122,16 @@ pub fn normalize_tvh_url(raw: &str) -> Option<String> {
         return None;
     }
     Some(format!("{scheme}://{rest}"))
+}
+
+/// Validate the failed-sign-in webhook: blank (off), or an absolute http(s) URL.
+pub fn normalize_webhook(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Some(String::new());
+    }
+    let url = reqwest::Url::parse(s).ok()?;
+    (matches!(url.scheme(), "http" | "https") && url.host().is_some()).then(|| s.to_string())
 }
 
 /// Split "nfl, Olympics ,," into `["nfl", "olympics"]`, preserving order, deduped.

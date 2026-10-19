@@ -178,6 +178,70 @@ fn client_key(parts: &Parts) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// A failed sign-in (or setup code): one log line, plus a POST to the admin's webhook
+/// if one is set. Never delays the response. The login throttle caps how often this
+/// can happen, so neither the log nor the webhook can be flooded.
+fn report_failed_signin(state: &Shared, parts: &Parts, key: &str, username: &str) {
+    let ip = client_key(parts);
+    // Informational only (it can be forged): who the tunnel or proxy says connected.
+    let forwarded = ["cf-connecting-ip", "x-forwarded-for"]
+        .iter()
+        .find_map(|h| parts.headers.get(*h)?.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(|v| v.trim().chars().take(64).collect::<String>())
+        .filter(|v| !v.is_empty());
+    let username: String = username.trim().chars().take(64).collect();
+    let locked_out = state
+        .limiter
+        .lock()
+        .unwrap()
+        .check(key, Instant::now())
+        .err()
+        .unwrap_or(0);
+    // {:?} escapes quotes and control characters, so a username can't forge log lines.
+    eprintln!(
+        "failed sign-in for {username:?} from {ip}{}; locked out {locked_out}s",
+        forwarded
+            .as_ref()
+            .map(|f| format!(" (forwarded-for {f:?})"))
+            .unwrap_or_default()
+    );
+    let url = state
+        .settings
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.alert_webhook.clone())
+        .unwrap_or_default();
+    if url.is_empty() {
+        return;
+    }
+    let body = json!({
+        "event": "login_failed",
+        "username": username,
+        "ip": ip,
+        "forwarded_for": forwarded,
+        "locked_out_seconds": locked_out,
+        "time": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+    });
+    let http = state.http.clone();
+    tokio::spawn(async move {
+        let sent = http
+            .post(&url)
+            .json(&body)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .and_then(|r| r.error_for_status());
+        if let Err(e) = sent {
+            eprintln!(
+                "failed sign-in webhook didn't go through: {}",
+                e.without_url()
+            );
+        }
+    });
+}
+
 fn with_cookie(mut r: Response, cookie: String) -> Response {
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         r.headers_mut().append(header::SET_COOKIE, v);
@@ -302,6 +366,7 @@ pub async fn setup(
             .lock()
             .unwrap()
             .record_failure(&key, Instant::now());
+        report_failed_signin(&state, &parts, &key, "(setup code)");
         return err(
             StatusCode::FORBIDDEN,
             "That setup code isn't right. It's printed in the container log.",
@@ -341,6 +406,7 @@ pub async fn setup(
         username: None,
         password_hash: None,
         keywords: config::parse_keywords(&b.keywords),
+        alert_webhook: String::new(),
     };
     if let Err(e) = config::save(&state.data_dir, &settings) {
         return err(
@@ -396,6 +462,7 @@ pub async fn login(
             .lock()
             .unwrap()
             .record_failure(&key, Instant::now());
+        report_failed_signin(&state, &parts, &key, &b.username);
         tokio::time::sleep(Duration::from_millis(400)).await;
         return err(StatusCode::UNAUTHORIZED, "Wrong username or password.");
     };
@@ -437,6 +504,7 @@ pub async fn get_settings(State(state): State<Shared>, headers: HeaderMap) -> Re
             "has_tvh_password": !s.tvh_password.is_empty(),
             "username": me.username,
             "keywords": s.keywords.join(", "),
+            "alert_webhook": s.alert_webhook,
             "accounts": accounts_json(&s, &me),
         }))
         .into_response(),
@@ -460,6 +528,8 @@ pub struct SettingsBody {
     pub tvh_password: Option<String>,
     #[serde(default)]
     pub keywords: String,
+    /// `None` keeps the stored webhook; `""` turns it off.
+    pub alert_webhook: Option<String>,
     #[serde(default)]
     pub current_password: String,
     #[serde(default)]
@@ -515,6 +585,15 @@ pub async fn save_settings(
         next.tvh_password = p;
     }
     next.keywords = config::parse_keywords(&b.keywords);
+    if let Some(raw) = &b.alert_webhook {
+        let Some(url) = config::normalize_webhook(raw) else {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "The webhook needs to be a full URL, like http://homeassistant.local:8123/api/webhook/…",
+            );
+        };
+        next.alert_webhook = url;
+    }
     if tvh_changed {
         let probe = tvh::Tvh {
             base: next.tvh_url.clone(),

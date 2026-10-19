@@ -257,6 +257,9 @@
           <h3>Watching</h3>
           <label class="field"><span class="label">Jump-to keywords</span><input name="keywords" spellcheck="false" placeholder="nfl, olympics">
             <span class="hint">On opening the app, the first keyword matching something on air tunes straight to it (only when nothing is already playing).</span></label>
+          <h3>Alerts</h3>
+          <label class="field"><span class="label">Failed sign-in webhook</span><input name="alert_webhook" spellcheck="false" inputmode="url" autocomplete="off" placeholder="(off)">
+            <span class="hint">Optional. Every wrong password POSTs a JSON event here, e.g. a Home Assistant webhook. Failed sign-ins are also written to the container log.</span></label>
           <h3>Your password</h3>
           <label class="field"><span class="label">Current password</span><input name="current_password" type="password" autocomplete="current-password"></label>
           <div class="row2">
@@ -269,7 +272,7 @@
 
         <section class="sp-card">
           <h3>Accounts</h3>
-          <p class="hint">The <strong>priority</strong> account takes over the tuner when it picks a channel; whoever was watching keeps watching that channel. Only one account can be priority.</p>
+          <p class="hint">Whenever the <strong>priority</strong> account is watching, it holds the remote; whoever had it keeps watching along. Only one account can be priority.</p>
           <div id="accounts" class="accounts"></div>
           <form id="add-account" class="add-account" novalidate autocomplete="off">
             <h4>Add an account</h4>

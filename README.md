@@ -32,6 +32,15 @@ The container speaks plain HTTP. Put HTTPS in front of it: Caddy, nginx, or a Cl
 
 Login throttling goes by the connecting address and ignores forwarded headers (they can be forged), so behind a tunnel all remote visitors share one throttle. That makes guessing slower, at the cost that a bot can briefly hold up new remote sign-ins; anyone already signed in is unaffected. Sign-ins last 400 days and renew whenever the app is opened, so once a device is in, it stays in. Changing a password or deleting an account signs it out everywhere.
 
+Every failed sign-in is written to the container log (`docker logs tvh-proxy | grep "failed sign-in"`). To be alerted too, set a **failed sign-in webhook** in settings, such as a Home Assistant webhook. Each failure POSTs:
+
+```json
+{"event": "login_failed", "username": "admin", "ip": "172.18.0.5", "forwarded_for": "203.0.113.7",
+ "locked_out_seconds": 0, "time": 1792440000}
+```
+
+`ip` is the connecting address (the tunnel's, behind one); `forwarded_for` is what the proxy reports and can be forged. Passwords are never logged or sent. Use a long random webhook id, since anyone who knows it can trigger the webhook.
+
 Setup is gated by the code from the container log, so a stranger who finds the URL before you finish can't claim it.
 
 On an iPhone, open the site in Safari → Share → **Add to Home Screen** to get a full-screen app.

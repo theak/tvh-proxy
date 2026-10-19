@@ -1024,3 +1024,116 @@ fn silent_tabs_time_out_and_an_unwatched_stream_stops_after_grace() {
     hub.heartbeat("z", t1 + Duration::from_secs(60));
     assert_eq!(hub.view("z").role, Role::Idle);
 }
+
+#[test]
+fn webhook_urls_must_be_absolute_http() {
+    assert_eq!(config::normalize_webhook("  ").as_deref(), Some(""));
+    assert_eq!(
+        config::normalize_webhook(" http://ha.local:8123/api/webhook/abc ").as_deref(),
+        Some("http://ha.local:8123/api/webhook/abc")
+    );
+    assert!(config::normalize_webhook("ha.local/api/webhook/abc").is_none());
+    assert!(config::normalize_webhook("ftp://ha.local/x").is_none());
+    assert!(config::normalize_webhook("http://").is_none());
+}
+
+#[tokio::test]
+async fn failed_sign_ins_post_to_the_webhook() {
+    use axum::{Json, Router, routing::post};
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let hook = Router::new().route(
+        "/api/webhook/abc",
+        post(move |Json(v): Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                tx.send(v).unwrap();
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hook_url = format!("http://{}/api/webhook/abc", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, hook).await.unwrap() });
+
+    let state = build_state(temp_dir("hook"), temp_dir("work"), enc(false));
+    let code = state.setup_code.lock().unwrap().clone().unwrap();
+    let app = build_router(state);
+    let tvh_url = fake_tvh().await;
+    let (_, _, admin) = send(
+        &app,
+        "POST",
+        "/api/setup",
+        Some(setup_body(&code, &tvh_url)),
+        None,
+    )
+    .await;
+    let admin = admin.unwrap();
+
+    let (s, _) = json_req(
+        &app,
+        "POST",
+        "/api/settings",
+        json!({ "tvh_url": tvh_url, "alert_webhook": "not a url" }),
+        &admin,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v) = json_req(
+        &app,
+        "POST",
+        "/api/settings",
+        json!({ "tvh_url": tvh_url, "alert_webhook": hook_url }),
+        &admin,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, v, _) = send(&app, "GET", "/api/settings", None, Some(&admin)).await;
+    assert_eq!(v["alert_webhook"], hook_url.as_str());
+    // Saving without the field keeps it.
+    json_req(
+        &app,
+        "POST",
+        "/api/settings",
+        json!({ "tvh_url": tvh_url }),
+        &admin,
+    )
+    .await;
+    let (_, v, _) = send(&app, "GET", "/api/settings", None, Some(&admin)).await;
+    assert_eq!(v["alert_webhook"], hook_url.as_str());
+
+    let (s, _, _) = send(
+        &app,
+        "POST",
+        "/api/login",
+        Some(json!({ "username": "akshay", "password": "wrong-password" })),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let event = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("webhook called")
+        .unwrap();
+    assert_eq!(event["event"], "login_failed");
+    assert_eq!(event["username"], "akshay");
+    assert_eq!(event["locked_out_seconds"], 0);
+    assert!(
+        event.to_string().find("wrong-password").is_none(),
+        "never sends the password"
+    );
+
+    // A successful sign-in sends nothing.
+    let (s, _, _) = send(
+        &app,
+        "POST",
+        "/api/login",
+        Some(json!({ "username": "akshay", "password": "hunter2hunter2" })),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .is_err()
+    );
+}

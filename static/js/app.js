@@ -761,6 +761,7 @@
     f.tvh_username.value = r.data.tvh_username || '';
     f.tvh_password.placeholder = r.data.has_tvh_password ? 'unchanged' : '(none)';
     f.keywords.value = r.data.keywords;
+    f.alert_webhook.value = r.data.alert_webhook || '';
     $('add-account').reset();
     formError($('add-account'), '');
     renderAccounts(r.data.accounts || []);
@@ -778,7 +779,7 @@
     const f = e.currentTarget;
     const d = formData(f);
     const body = {
-      tvh_url: d.tvh_url, tvh_username: d.tvh_username, keywords: d.keywords,
+      tvh_url: d.tvh_url, tvh_username: d.tvh_username, keywords: d.keywords, alert_webhook: d.alert_webhook,
       current_password: d.current_password, new_password: d.new_password, confirm: d.confirm,
     };
     if (d.tvh_password) body.tvh_password = d.tvh_password;
