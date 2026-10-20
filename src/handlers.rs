@@ -66,6 +66,13 @@ const ASSETS: &[(&str, &[u8], &str)] = &[
         include_bytes!("../static/img/icon-512.png"),
         "image/png",
     ),
+    (
+        // Full-bleed, glyph inside the central safe zone: Android and ChromeOS crop
+        // it to their own shape instead of shrinking the icon onto a grey circle.
+        "img/icon-maskable-512.png",
+        include_bytes!("../static/img/icon-maskable-512.png"),
+        "image/png",
+    ),
 ];
 
 /// Cache-busting token for asset URLs: a hash of every embedded asset.
@@ -280,6 +287,7 @@ pub async fn manifest() -> Response {
         "theme_color": "#0B0B0C",
         "icons": [
             { "src": format!("/static/img/icon-512.png?v={v}"), "sizes": "512x512", "type": "image/png" },
+            { "src": format!("/static/img/icon-maskable-512.png?v={v}"), "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
             { "src": format!("/static/img/icon.svg?v={v}"), "sizes": "any", "type": "image/svg+xml" }
         ]
     });
