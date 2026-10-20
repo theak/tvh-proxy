@@ -85,6 +85,8 @@ details.more > :not(summary) + :not(summary) { margin-top: 12px; }
 .btn-primary.busy span::after { content: '…'; }
 .btn-glass { height: 44px; display: inline-flex; align-items: center; gap: 10px; padding: 0 14px 0 13px; border-radius: 999px; background: var(--fg-10); border: 1px solid var(--fg-16); color: var(--fg); font-size: 14px; font-weight: 500; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); transition: background 160ms; white-space: nowrap; }
 .btn-glass:hover { background: rgba(244,241,234,.2); }
+.cc-mark { font-size: 12px; font-weight: 700; letter-spacing: .04em; padding: 2px 5px; border: 1.5px solid currentColor; border-radius: 5px; }
+#cc[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
 .round { width: 44px; height: 44px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--fg-10); border: 1px solid var(--fg-16); color: var(--fg); font-size: 18px; transition: background 160ms, opacity 160ms; padding: 0; }
 .round:hover { background: rgba(244,241,234,.22); }
 .round:disabled { opacity: .3; cursor: default; }

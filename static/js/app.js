@@ -284,6 +284,41 @@
     tryPlay();
   }
 
+  // ------------------------------------------------------------ captions
+  // Broadcast closed captions ride inside the video; both Safari and hls.js expose them
+  // as a text track. On/off is remembered per device. Until it's been chosen, the
+  // browser's default stands (iOS shows them when its "Closed Captions + SDH" is on).
+  const CC_KEY = 'tvhp.captions';
+  function ccPref() {
+    try { const v = localStorage.getItem(CC_KEY); return v === 'on' ? true : v === 'off' ? false : null; } catch (_) { return null; }
+  }
+  const ccTracks = () => Array.from(video.textTracks || []).filter((t) => t.kind === 'captions' || t.kind === 'subtitles');
+  function syncCaptions() {
+    const tracks = ccTracks();
+    const pref = ccPref();
+    if (pref !== null) {
+      tracks.forEach((t, i) => {
+        const mode = pref && i === 0 ? 'showing' : 'hidden';
+        if (t.mode !== mode) t.mode = mode;
+      });
+    }
+    const b = $('cc');
+    b.hidden = !tracks.length;
+    b.setAttribute('aria-pressed', String(tracks.some((t) => t.mode === 'showing')));
+  }
+  function toggleCaptions() {
+    const on = !ccTracks().some((t) => t.mode === 'showing');
+    try { localStorage.setItem(CC_KEY, on ? 'on' : 'off'); } catch (_) { /* still applies for now */ }
+    syncCaptions();
+    toast(on ? 'Captions on' : 'Captions off');
+  }
+  if (video.textTracks) {
+    video.textTracks.addEventListener('addtrack', syncCaptions);
+    video.textTracks.addEventListener('change', syncCaptions);
+    video.textTracks.addEventListener('removetrack', syncCaptions);
+  }
+  $('cc').addEventListener('click', (e) => { e.stopPropagation(); toggleCaptions(); });
+
   function reattach() {
     const sv = S.view && S.view.stream;
     if (sv && sv.status.state !== 'error') attach(sv);
@@ -743,6 +778,7 @@
     else if (k === 's' || k === 'S' || k === 'Escape') { e.preventDefault(); stopWatching(); }
     else if (k === 'm' || k === 'M') { video.muted = !video.muted; $('sound').hidden = true; toast(video.muted ? 'Muted' : 'Sound on'); }
     else if (k === 'f' || k === 'F') toggleFullscreen();
+    else if ((k === 'c' || k === 'C') && ccTracks().length) toggleCaptions();
     else showChrome();
   });
 

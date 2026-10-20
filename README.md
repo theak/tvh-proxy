@@ -7,7 +7,7 @@ A sleek, password-protected live TV web frontend for [tvheadend](https://tvheade
  <img width="796" height="442" alt="tvh-guide" src="https://github.com/user-attachments/assets/e054afeb-5da1-455b-882a-90722bb61d5f" />
 </p>
 
-- **Full-screen viewer** with now/next info, ↑/↓ buttons or arrow keys to change channel, `G` for the guide, and ✕ (or `S` / `Esc`) to stop and free the tuner.
+- **Full-screen viewer** with now/next info, ↑/↓ buttons or arrow keys to change channel, `G` for the guide, **CC** (or `C`) for the broadcast's closed captions (remembered per device), and ✕ (or `S` / `Esc`) to stop and free the tuner.
 - **Guide** built from tvheadend's EPG, with keyboard and touch navigation.
 - **Plays on iPhone.** tvheadend's raw broadcast (MPEG-2 video, AC-3 audio) won't play in Safari, so the proxy re-encodes the channel you pick to H.264/AAC with ffmpeg and serves it as 1-second HLS segments, in HD (720p) and SD (360p, ~0.9 Mbps). Each device switches between them on its own as its connection changes, so a phone on weak cellular drops to SD without affecting anyone else. Typical start-up is ~3 seconds.
 
