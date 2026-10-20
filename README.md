@@ -1,9 +1,8 @@
 # tvh-proxy
 
-A sleek, password-protected live TV web frontend for [tvheadend](https://tvheadend.org) that you can safely put on the internet and watch from any mobile web or desktop device:
+A sleek, password-protected live TV web frontend for [tvheadend](https://tvheadend.org) that you can safely put on the internet (behind username / password auth) and watch from any mobile web or desktop device:
 
 <p align="center">
- <img width="339" height="302" alt="image" src="https://github.com/user-attachments/assets/7800ba1f-a0c9-4609-84cb-a5bf82e0e5bd" />
  <img width="796" height="443" alt="tvh-proxy" src="https://github.com/user-attachments/assets/e37aec33-41b9-4c5c-826c-2efd5a1fac68" />
  <img width="796" height="442" alt="tvh-guide" src="https://github.com/user-attachments/assets/e054afeb-5da1-455b-882a-90722bb61d5f" />
 </p>
