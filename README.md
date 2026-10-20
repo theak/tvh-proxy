@@ -11,12 +11,18 @@ A sleek, password-protected live TV web frontend for [tvheadend](https://tvheade
 - **Full-screen viewer** with now/next info, ↑/↓ buttons or arrow keys to change channel, `G` for the guide, and ✕ (or `S` / `Esc`) to stop and free the tuner.
 - **Guide** built from tvheadend's EPG, with keyboard and touch navigation.
 - **Plays on iPhone.** tvheadend's raw broadcast (MPEG-2 video, AC-3 audio) won't play in Safari, so the proxy re-encodes the channel you pick to H.264/AAC with ffmpeg and serves it as 1-second HLS segments, in HD (720p) and SD (360p, ~0.9 Mbps). Each device switches between them on its own as its connection changes, so a phone on weak cellular drops to SD without affecting anyone else. Typical start-up is ~3 seconds.
-- **Jump-to keywords.** e.g. `nfl, olympics`: when you open the app, the first keyword that matches something on air (as a whole word, in its title, episode, description or category) tunes straight to it; otherwise you land in the guide.
-- **One TV, one remote.** Built for a single tuner: everyone signed in watches the same channel. Whoever started watching holds the remote; everyone else watches along with a banner and can't change the channel. When the remote holder leaves or presses ✕, the remote passes on.
-- **Accounts.** The account made during setup is the admin, the only one who sees settings (a full page; opening it stops playback). The admin adds other accounts, resets their passwords, and can mark one account as **priority**: whenever it's watching, it holds the remote (just opening the app takes it, with no retune), and whoever had it keeps watching. Passwords are argon2 hashes; sessions survive restarts; logins are rate-limited.
 
 ## Run it
+```sh
+docker run -d \
+  --name tvh-proxy \
+  --restart unless-stopped \
+  -p 9982:9982 \
+  -v tvh-proxy-data:/data \
+  akshaykannan/tvh-proxy:latest
+```
 
+Or using docker compose with [docker-compose.yml](docker-compose.yml)
 ```sh
 docker compose up -d        # see docker-compose.yml
 docker logs tvh-proxy       # shows the one-time setup code
@@ -38,20 +44,7 @@ The container speaks plain HTTP. Put HTTPS in front of it: Caddy, nginx, or a Cl
 
 Login throttling goes by the connecting address and ignores forwarded headers (they can be forged), so behind a tunnel all remote visitors share one throttle. That makes guessing slower, at the cost that a bot can briefly hold up new remote sign-ins; anyone already signed in is unaffected. Sign-ins last 400 days and renew whenever the app is opened, so once a device is in, it stays in. Changing a password or deleting an account signs it out everywhere.
 
-Every failed sign-in is written to the container log (`docker logs tvh-proxy | grep "failed sign-in"`). To be alerted too, set a **failed sign-in webhook** in settings, such as a Home Assistant webhook. Each failure POSTs:
-
-```json
-{"event": "login_failed", "username": "admin", "ip": "172.18.0.5", "forwarded_for": "203.0.113.7",
- "locked_out_seconds": 0, "time": 1792440000}
-```
-
-`ip` is the connecting address (the tunnel's, behind one); `forwarded_for` is what the proxy reports and can be forged. Passwords are never logged or sent. Use a long random webhook id, since anyone who knows it can trigger the webhook.
-
-`GET /api/status` needs no login and includes `active_clients`, the number of browser tabs watching right now (0 when nothing is playing), handy for a Home Assistant REST sensor. A tab drops out of the count about 15 seconds after it's closed.
-
-Setup is gated by the code from the container log, so a stranger who finds the URL before you finish can't claim it.
-
-On an iPhone, open the site in Safari → Share → **Add to Home Screen** to get a full-screen app.
+Every failed sign-in is written to the container log (`docker logs tvh-proxy | grep "failed sign-in"`). To be alerted too, set a **failed sign-in webhook** in settings, such as a Home Assistant webhook.
 
 ## Tuning
 
